@@ -8,18 +8,18 @@ rust-version.workspace = true
 
 [dependencies]
 lambda-otlp-forwarder = { path = "../../../processors/forwarder" }
-tokio.workspace = true
-anyhow.workspace = true
-aws_lambda_events = { workspace = true, features = ["kinesis"] }
-lambda_runtime.workspace = true
-aws-sdk-secretsmanager.workspace = true
-reqwest.workspace = true
-tracing.workspace = true
-lambda-otel-utils.workspace = true
-otlp-sigv4-client.workspace = true
-aws-config.workspace = true
-aws-credential-types.workspace = true
-serde_json.workspace = true
+tokio = { version = "1", features = ["full"] }
+anyhow = "1.0.94"
+aws_lambda_events = { version = "0.16.0", default-features = false, features = ["apigw", "alb", "sqs"] }
+lambda_runtime = { version = "0.13.0", features = ["anyhow", "tracing", "opentelemetry"] }
+aws-sdk-secretsmanager = { version = "1.48.0", features = ["behavior-version-latest"] }
+reqwest = { version = "0.12.9", default-features = false, features = ["json", "rustls-tls"] }
+tracing = { version = "0.1", features = ["log"] }
+lambda-otel-utils = "0.3.0"
+otlp-sigv4-client = "0.3.0"
+aws-config = { version = "1.5.17", features = ["behavior-version-latest"] }
+aws-credential-types = "1.2.1"
+serde_json = "1.0.133"
 
 [dev-dependencies]
-chrono = "0.4" 
+chrono = "0.4.39" 
