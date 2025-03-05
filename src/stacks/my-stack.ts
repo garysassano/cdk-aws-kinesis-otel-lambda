@@ -1,12 +1,24 @@
-import { CfnOutput, Duration, Fn, Stack, StackProps } from "aws-cdk-lib";
+import {
+  CfnOutput,
+  Duration,
+  Fn,
+  SecretValue,
+  Stack,
+  StackProps,
+} from "aws-cdk-lib";
 import { SecurityGroup, Vpc } from "aws-cdk-lib/aws-ec2";
 import { Effect, PolicyStatement } from "aws-cdk-lib/aws-iam";
 import { Stream, StreamMode } from "aws-cdk-lib/aws-kinesis";
 import { Architecture, StartingPosition } from "aws-cdk-lib/aws-lambda";
 import { KinesisEventSource } from "aws-cdk-lib/aws-lambda-event-sources";
+import { Secret } from "aws-cdk-lib/aws-secretsmanager";
 import { RustFunction } from "cargo-lambda-cdk";
 import { Construct } from "constructs";
 import { join } from "path";
+
+// Constants
+const OTEL_EXPORTER_OTLP_PROTOCOL = "http/protobuf";
+const OTEL_EXPORTER_OTLP_COMPRESSION = "gzip";
 
 export interface MyStackProps extends StackProps {
   collectorsSecretsKeyPrefix?: string;
@@ -15,6 +27,8 @@ export interface MyStackProps extends StackProps {
   subnetIds?: string[];
   kinesisStreamMode?: string;
   shardCount?: number;
+  otelExporterOtlpEndpoint?: string;
+  otelExporterOtlpHeaders?: string;
 }
 
 export class MyStack extends Stack {
@@ -29,10 +43,31 @@ export class MyStack extends Stack {
     const subnetIds = props.subnetIds || [];
     const kinesisStreamMode = props.kinesisStreamMode || "PROVISIONED";
     const shardCount = props.shardCount || 1;
+    const otelExporterOtlpEndpoint =
+      props.otelExporterOtlpEndpoint || "https://example.com/v1/traces";
+    const otelExporterOtlpHeaders =
+      props.otelExporterOtlpHeaders || "api-key=your-api-key";
 
     // Check conditions (similar to the SAM template)
     const isProvisionedMode = kinesisStreamMode === "PROVISIONED";
     const hasVpcConfig = vpcId !== "";
+
+    //==============================================================================
+    // SECRETS MANAGER
+    //==============================================================================
+
+    // Create the collector secret
+    const collectorSecret = new Secret(this, "DefaultCollectorSecret", {
+      secretName: `${collectorsSecretsKeyPrefix}/default`,
+      description: "Default OTLP collector configuration",
+      secretStringValue: SecretValue.unsafePlainText(
+        JSON.stringify({
+          name: "default",
+          endpoint: otelExporterOtlpEndpoint,
+          auth: otelExporterOtlpHeaders,
+        }),
+      ),
+    });
 
     // Create Kinesis Stream
     const otlpKinesisStream = new Stream(this, "OtlpKinesisStream", {
@@ -69,15 +104,16 @@ export class MyStack extends Stack {
       {
         functionName: this.stackName,
         description: `Processes OTLP data from Kinesis stream in AWS Account ${this.account}`,
-        manifestPath: join(__dirname, "functions/processor", "Cargo.toml"),
+        manifestPath: join(__dirname, "processor", "Cargo.toml"),
         architecture: Architecture.ARM_64,
         timeout: Duration.seconds(60),
         environment: {
           RUST_LOG: "info",
           OTEL_SERVICE_NAME: this.stackName,
-          OTEL_EXPORTER_OTLP_ENDPOINT: `{{resolve:secretsmanager:${collectorsSecretsKeyPrefix}/default:SecretString:endpoint}}`,
-          OTEL_EXPORTER_OTLP_HEADERS: `{{resolve:secretsmanager:${collectorsSecretsKeyPrefix}/default:SecretString:auth}}`,
-          OTEL_EXPORTER_OTLP_PROTOCOL: "http/protobuf",
+          OTEL_EXPORTER_OTLP_ENDPOINT: otelExporterOtlpEndpoint,
+          OTEL_EXPORTER_OTLP_HEADERS: otelExporterOtlpHeaders,
+          OTEL_EXPORTER_OTLP_PROTOCOL: OTEL_EXPORTER_OTLP_PROTOCOL,
+          OTEL_EXPORTER_OTLP_COMPRESSION: OTEL_EXPORTER_OTLP_COMPRESSION,
           COLLECTORS_CACHE_TTL_SECONDS: collectorsCacheTtlSeconds.toString(),
           COLLECTORS_SECRETS_KEY_PREFIX: `${collectorsSecretsKeyPrefix}/`,
         },
@@ -85,6 +121,9 @@ export class MyStack extends Stack {
         securityGroups: hasVpcConfig ? [securityGroup!] : undefined,
       },
     );
+
+    // Grant the Lambda function permission to read the secret
+    collectorSecret.grantRead(kinesisProcessorFunction);
 
     // Add IAM policies to the Lambda function
     kinesisProcessorFunction.addToRolePolicy(
@@ -98,16 +137,6 @@ export class MyStack extends Stack {
           "xray:PutSpansForIndexing",
         ],
         resources: ["*"],
-      }),
-    );
-
-    kinesisProcessorFunction.addToRolePolicy(
-      new PolicyStatement({
-        effect: Effect.ALLOW,
-        actions: ["secretsmanager:GetSecretValue"],
-        resources: [
-          `arn:${this.partition}:secretsmanager:${this.region}:${this.account}:secret:${collectorsSecretsKeyPrefix}/*`,
-        ],
       }),
     );
 
@@ -143,6 +172,11 @@ export class MyStack extends Stack {
     new CfnOutput(this, "KinesisProcessorFunctionArn", {
       description: "ARN of the Kinesis processor Lambda function",
       value: kinesisProcessorFunction.functionArn,
+    });
+
+    new CfnOutput(this, "OtlpKinesisStreamName", {
+      description: "Name of the Kinesis stream for OTLP data",
+      value: otlpKinesisStream.streamName,
     });
 
     if (hasVpcConfig) {

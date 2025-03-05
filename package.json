@@ -25,7 +25,7 @@
   },
   "devDependencies": {
     "@types/jest": "^29.5.14",
-    "@types/node": "^22.13.9",
+    "@types/node": "^22",
     "@typescript-eslint/eslint-plugin": "^8",
     "@typescript-eslint/parser": "^8",
     "aws-cdk": "^2",
@@ -41,14 +41,18 @@
     "projen": "^0.91.14",
     "ts-jest": "^29.2.6",
     "ts-node": "^10.9.2",
-    "typescript": "^5.8.2"
+    "typescript": "^5.8.2",
+    "zod": "^3.24.2"
   },
   "dependencies": {
-    "aws-cdk-lib": "^2.1.0",
+    "aws-cdk-lib": "^2.181.1",
     "cargo-lambda-cdk": "^0.0.32",
     "constructs": "^10.0.5"
   },
   "pnpm": {},
+  "engines": {
+    "node": ">= 22.14.0"
+  },
   "license": "Apache-2.0",
   "publishConfig": {
     "access": "public"
