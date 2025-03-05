@@ -18,7 +18,9 @@ import { AttributeType, TableV2 } from "aws-cdk-lib/aws-dynamodb";
 import { Effect, PolicyStatement, ServicePrincipal } from "aws-cdk-lib/aws-iam";
 import {
   Architecture,
+  Code,
   FunctionUrlAuthType,
+  LayerVersion,
   LoggingFormat,
   Runtime,
 } from "aws-cdk-lib/aws-lambda";
@@ -270,6 +272,49 @@ export class MyStack extends Stack {
         resources: ["*"],
       }),
     );
+
+    //==============================================================================
+    // LAMBDA LAYER - RUST EXTENSION
+    //==============================================================================
+
+    // Create a custom Lambda layer that builds a Rust extension
+    const rustExtensionLayer = new LayerVersion(
+      this,
+      "StdoutKinesisOTLPLayer",
+      {
+        code: Code.fromAsset(join(__dirname, "..", "functions/extension"), {
+          bundling: {
+            image: DockerImage.fromRegistry(
+              "amazon/aws-sam-cli-build-image-rust",
+            ),
+            command: [
+              "bash",
+              "-c",
+              [
+                "cargo lambda build --release --extension --arm64",
+                "mkdir -p /asset-output/extensions",
+                // The following uses jq to get the target directory and then copies the extension to the output
+                "cp \"$(cargo metadata --format-version=1 | jq -r '.target_directory')/lambda/extensions/otlp-stdout-kinesis-extension-layer\" /asset-output/extensions/",
+              ].join(" && "),
+            ],
+            user: "root",
+          },
+        }),
+        description: "OTLP Stdout Kinesis Extension Layer",
+        compatibleArchitectures: [Architecture.ARM_64],
+        compatibleRuntimes: [
+          Runtime.PROVIDED_AL2023,
+          Runtime.NODEJS_22_X,
+          Runtime.PYTHON_3_13,
+        ],
+      },
+    );
+
+    // Export the layer ARN
+    new CfnOutput(this, "RustExtensionLayerArn", {
+      value: rustExtensionLayer.layerVersionArn,
+      description: "ARN of the Rust extension layer",
+    });
 
     //==============================================================================
     // CLOUDWATCH LOGS
