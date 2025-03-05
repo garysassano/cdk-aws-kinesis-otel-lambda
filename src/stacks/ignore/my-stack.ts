@@ -1,201 +1,328 @@
+import { Schedule, ScheduleExpression } from "@aws-cdk/aws-scheduler-alpha";
+import { LambdaInvoke } from "@aws-cdk/aws-scheduler-targets-alpha";
 import {
   CfnOutput,
+  DockerImage,
   Duration,
-  Fn,
+  RemovalPolicy,
   SecretValue,
   Stack,
   StackProps,
 } from "aws-cdk-lib";
-import { SecurityGroup, Vpc } from "aws-cdk-lib/aws-ec2";
-import { Effect, PolicyStatement } from "aws-cdk-lib/aws-iam";
-import { Stream, StreamMode } from "aws-cdk-lib/aws-kinesis";
+import {
+  EndpointType,
+  LambdaIntegration,
+  RestApi,
+} from "aws-cdk-lib/aws-apigateway";
+import { AttributeType, TableV2 } from "aws-cdk-lib/aws-dynamodb";
+import { Effect, PolicyStatement, ServicePrincipal } from "aws-cdk-lib/aws-iam";
 import {
   Architecture,
+  FunctionUrlAuthType,
   LoggingFormat,
-  StartingPosition,
+  Runtime,
 } from "aws-cdk-lib/aws-lambda";
-import { KinesisEventSource } from "aws-cdk-lib/aws-lambda-event-sources";
+import { NodejsFunction } from "aws-cdk-lib/aws-lambda-nodejs";
+import {
+  FilterPattern,
+  LogGroup,
+  RetentionDays,
+  SubscriptionFilter,
+} from "aws-cdk-lib/aws-logs";
+import { LambdaDestination } from "aws-cdk-lib/aws-logs-destinations";
 import { Secret } from "aws-cdk-lib/aws-secretsmanager";
 import { RustFunction } from "cargo-lambda-cdk";
 import { Construct } from "constructs";
 import { join } from "path";
+import { PythonFunction } from "uv-python-lambda";
+import { validateEnv } from "../utils/validate-env";
 
 // Constants
 const OTEL_EXPORTER_OTLP_PROTOCOL = "http/protobuf";
 const OTEL_EXPORTER_OTLP_COMPRESSION = "gzip";
+const COLLECTORS_SECRETS_KEY_PREFIX = "lambda-otlp-forwarder/keys/";
 
-export interface MyStackProps extends StackProps {
-  collectorsSecretsKeyPrefix?: string;
-  collectorsCacheTtlSeconds?: number;
-  vpcId?: string;
-  subnetIds?: string[];
-  kinesisStreamMode?: string;
-  shardCount?: number;
-  otelExporterOtlpEndpoint?: string;
-  otelExporterOtlpHeaders?: string;
-}
+// Required environment variables
+const { OTEL_EXPORTER_OTLP_ENDPOINT, OTEL_EXPORTER_OTLP_HEADERS } = validateEnv(
+  ["OTEL_EXPORTER_OTLP_ENDPOINT", "OTEL_EXPORTER_OTLP_HEADERS"],
+);
 
 export class MyStack extends Stack {
-  constructor(scope: Construct, id: string, props: MyStackProps = {}) {
+  constructor(scope: Construct, id: string, props: StackProps = {}) {
     super(scope, id, props);
-
-    // Set default values for parameters
-    const collectorsSecretsKeyPrefix =
-      props.collectorsSecretsKeyPrefix || "serverless-otlp-forwarder/keys";
-    const collectorsCacheTtlSeconds = props.collectorsCacheTtlSeconds || 300;
-    const vpcId = props.vpcId || "";
-    const subnetIds = props.subnetIds || [];
-    const kinesisStreamMode = props.kinesisStreamMode || "PROVISIONED";
-    const shardCount = props.shardCount || 1;
-    const otelExporterOtlpEndpoint =
-      props.otelExporterOtlpEndpoint || "https://example.com/v1/traces";
-    const otelExporterOtlpHeaders =
-      props.otelExporterOtlpHeaders || "api-key=your-api-key";
-
-    // Check conditions (similar to the SAM template)
-    const isProvisionedMode = kinesisStreamMode === "PROVISIONED";
-    const hasVpcConfig = vpcId !== "";
 
     //==============================================================================
     // SECRETS MANAGER
     //==============================================================================
 
-    // Create the collector secret
-    const collectorSecret = new Secret(this, "DefaultCollectorSecret", {
-      secretName: `${collectorsSecretsKeyPrefix}/default`,
-      description: "Default OTLP collector configuration",
+    new Secret(this, "VendorSecret", {
+      secretName: `${COLLECTORS_SECRETS_KEY_PREFIX}vendor`,
+      description: "Vendor API key for OTLP forwarder",
       secretStringValue: SecretValue.unsafePlainText(
         JSON.stringify({
-          name: "default",
-          endpoint: otelExporterOtlpEndpoint,
-          auth: otelExporterOtlpHeaders,
+          name: "vendor",
+          endpoint: OTEL_EXPORTER_OTLP_ENDPOINT,
+          auth: OTEL_EXPORTER_OTLP_HEADERS,
         }),
       ),
     });
 
-    // Create Kinesis Stream
-    const otlpKinesisStream = new Stream(this, "OtlpKinesisStream", {
-      streamName: `${this.stackName}-otlp-stream`,
-      streamMode: isProvisionedMode
-        ? StreamMode.PROVISIONED
-        : StreamMode.ON_DEMAND,
-      shardCount: isProvisionedMode ? shardCount : undefined,
-      retentionPeriod: Duration.hours(24),
+    //==============================================================================
+    // DYNAMODB
+    //==============================================================================
+
+    const quotesTable = new TableV2(this, "QuotesTable", {
+      tableName: "quotes-table",
+      partitionKey: { name: "pk", type: AttributeType.STRING },
+      timeToLiveAttribute: "expiry",
+      removalPolicy: RemovalPolicy.DESTROY,
     });
 
-    // Create Security Group if VPC config is provided
-    let securityGroup;
-    let vpc;
+    //==============================================================================
+    // API GATEWAY
+    //==============================================================================
 
-    if (hasVpcConfig) {
-      vpc = Vpc.fromVpcAttributes(this, "ImportedVpc", {
-        vpcId: vpcId,
-        availabilityZones: Fn.getAzs(),
-        privateSubnetIds: subnetIds,
-      });
+    const backendApi = new RestApi(this, "BackendApi", {
+      restApiName: "backend-api",
+      endpointTypes: [EndpointType.REGIONAL],
+    });
+    backendApi.node.tryRemoveChild("Endpoint");
 
-      securityGroup = new SecurityGroup(this, "KinesisProcessorSecurityGroup", {
-        vpc,
-        description: "Security group for OTLP Kinesis Processor Lambda",
-        allowAllOutbound: true,
-      });
-    }
+    //==============================================================================
+    // LAMBDA - SERVICE FUNCTIONS
+    //==============================================================================
 
-    // Create Lambda Function for processing Kinesis events
-    const kinesisProcessorFunction = new RustFunction(
-      this,
-      "KinesisProcessorFunction",
-      {
-        functionName: this.stackName,
-        description: `Processes OTLP data from Kinesis stream in AWS Account ${this.account}`,
-        manifestPath: join(
-          __dirname,
-          "..",
-          "functions/processor",
-          "Cargo.toml",
-        ),
-        bundling: { cargoLambdaFlags: ["--quiet"] },
-        architecture: Architecture.ARM_64,
-        timeout: Duration.seconds(60),
-        loggingFormat: LoggingFormat.JSON,
-        environment: {
-          RUST_LOG: "info",
-          OTEL_SERVICE_NAME: this.stackName,
-          OTEL_EXPORTER_OTLP_ENDPOINT: otelExporterOtlpEndpoint,
-          OTEL_EXPORTER_OTLP_HEADERS: otelExporterOtlpHeaders,
-          OTEL_EXPORTER_OTLP_PROTOCOL: OTEL_EXPORTER_OTLP_PROTOCOL,
-          OTEL_EXPORTER_OTLP_COMPRESSION: OTEL_EXPORTER_OTLP_COMPRESSION,
-          COLLECTORS_CACHE_TTL_SECONDS: collectorsCacheTtlSeconds.toString(),
-          COLLECTORS_SECRETS_KEY_PREFIX: `${collectorsSecretsKeyPrefix}/`,
-        },
-        vpc: hasVpcConfig ? vpc : undefined,
-        securityGroups: hasVpcConfig ? [securityGroup!] : undefined,
+    // Backend Lambda
+    const backendLambda = new RustFunction(this, "BackendLambda", {
+      functionName: "backend-lambda",
+      manifestPath: join(__dirname, "..", "functions/service", "Cargo.toml"),
+      binaryName: "backend",
+      bundling: { cargoLambdaFlags: ["--quiet"] },
+      architecture: Architecture.ARM_64,
+      memorySize: 128,
+      timeout: Duration.minutes(1),
+      loggingFormat: LoggingFormat.JSON,
+      environment: {
+        RUST_LOG: "info",
+        TABLE_NAME: quotesTable.tableName,
+        OTEL_SERVICE_NAME: "backend-lambda",
+        OTEL_EXPORTER_OTLP_ENDPOINT,
+        OTEL_EXPORTER_OTLP_PROTOCOL,
+        OTEL_EXPORTER_OTLP_COMPRESSION,
       },
-    );
+    });
+    quotesTable.grantReadWriteData(backendLambda);
 
-    // Grant the Lambda function permission to read the secret
-    collectorSecret.grantRead(kinesisProcessorFunction);
+    // Frontend Lambda
+    const frontendLambda = new RustFunction(this, "frontendLambda", {
+      functionName: "frontend-lambda",
+      manifestPath: join(__dirname, "..", "functions/service", "Cargo.toml"),
+      binaryName: "frontend",
+      bundling: { cargoLambdaFlags: ["--quiet"] },
+      architecture: Architecture.ARM_64,
+      memorySize: 128,
+      timeout: Duration.minutes(1),
+      loggingFormat: LoggingFormat.JSON,
+      environment: {
+        RUST_LOG: "info",
+        TARGET_URL: backendApi.url,
+        OTEL_SERVICE_NAME: "frontend-lambda",
+        OTEL_EXPORTER_OTLP_ENDPOINT,
+        OTEL_EXPORTER_OTLP_PROTOCOL,
+        OTEL_EXPORTER_OTLP_COMPRESSION,
+      },
+    });
+    const frontendLambdaUrl = frontendLambda.addFunctionUrl({
+      authType: FunctionUrlAuthType.NONE,
+    });
 
-    // Add IAM policies to the Lambda function
-    kinesisProcessorFunction.addToRolePolicy(
+    //==============================================================================
+    // API GATEWAY INTEGRATIONS
+    //==============================================================================
+
+    // {api}/quotes
+    const quotesResource = backendApi.root.resourceForPath("/quotes");
+    quotesResource.addMethod("GET", new LambdaIntegration(backendLambda));
+    quotesResource.addMethod("POST", new LambdaIntegration(backendLambda));
+
+    // {api}/quotes/{id}
+    const quoteByIdResource = backendApi.root.resourceForPath("/quotes/{id}");
+    quoteByIdResource.addMethod("GET", new LambdaIntegration(backendLambda));
+
+    //==============================================================================
+    // LAMBDA - CLIENT FUNCTIONS
+    //==============================================================================
+
+    // Client Node Lambda
+    const clientNodeLambda = new NodejsFunction(this, "ClientNodeLambda", {
+      functionName: "client-node-lambda",
+      entry: join(__dirname, "..", "functions/client/node", "index.ts"),
+      runtime: Runtime.NODEJS_22_X,
+      architecture: Architecture.ARM_64,
+      memorySize: 1024,
+      timeout: Duration.minutes(1),
+      loggingFormat: LoggingFormat.JSON,
+      environment: {
+        TARGET_URL: `${backendApi.url}quotes`,
+        OTEL_SERVICE_NAME: "client-node-lambda",
+        OTEL_EXPORTER_OTLP_ENDPOINT,
+        OTEL_EXPORTER_OTLP_PROTOCOL,
+        OTEL_EXPORTER_OTLP_COMPRESSION,
+      },
+    });
+    new Schedule(this, "ClientNodeLambdaSchedule", {
+      scheduleName: `client-node-lambda-schedule`,
+      description: `Trigger ${clientNodeLambda.functionName} every 5 minutes`,
+      schedule: ScheduleExpression.rate(Duration.minutes(5)),
+      target: new LambdaInvoke(clientNodeLambda),
+    });
+
+    // Client Python Lambda
+    const clientPythonLambda = new PythonFunction(this, "ClientPythonLambda", {
+      functionName: "client-python-lambda",
+      rootDir: join(__dirname, "..", "functions/client/python"),
+      runtime: Runtime.PYTHON_3_13,
+      architecture: Architecture.ARM_64,
+      memorySize: 1024,
+      timeout: Duration.minutes(1),
+      loggingFormat: LoggingFormat.JSON,
+      environment: {
+        TARGET_URL: `${backendApi.url}quotes`,
+        OTEL_SERVICE_NAME: "client-python-lambda",
+        OTEL_EXPORTER_OTLP_ENDPOINT,
+        OTEL_EXPORTER_OTLP_PROTOCOL,
+        OTEL_EXPORTER_OTLP_COMPRESSION,
+      },
+      bundling: {
+        image: DockerImage.fromBuild(
+          join(__dirname, "..", "functions/client/python"),
+        ),
+        assetExcludes: ["Dockerfile"],
+      },
+    });
+    new Schedule(this, "ClientPythonLambdaSchedule", {
+      scheduleName: `client-python-lambda-schedule`,
+      description: `Trigger ${clientPythonLambda.functionName} every 5 minutes`,
+      schedule: ScheduleExpression.rate(Duration.minutes(5)),
+      target: new LambdaInvoke(clientPythonLambda),
+    });
+
+    // Client Rust Lambda
+    const clientRustLambda = new RustFunction(this, "ClientRustLambda", {
+      functionName: "client-rust-lambda",
+      manifestPath: join(
+        __dirname,
+        "..",
+        "functions/client/rust",
+        "Cargo.toml",
+      ),
+      bundling: { cargoLambdaFlags: ["--quiet"] },
+      architecture: Architecture.ARM_64,
+      memorySize: 1024,
+      timeout: Duration.minutes(1),
+      loggingFormat: LoggingFormat.JSON,
+      environment: {
+        RUST_LOG: "info",
+        OTEL_SERVICE_NAME: "client-rust-lambda",
+        OTEL_EXPORTER_OTLP_ENDPOINT,
+        OTEL_EXPORTER_OTLP_HEADERS,
+        OTEL_EXPORTER_OTLP_PROTOCOL,
+        OTEL_EXPORTER_OTLP_COMPRESSION,
+      },
+    });
+    const clientRustLambdaUrl = clientRustLambda.addFunctionUrl({
+      authType: FunctionUrlAuthType.NONE,
+    });
+
+    //==============================================================================
+    // LAMBDA - OTLP FORWARDER
+    //==============================================================================
+
+    // Forwarder Lambda
+    const forwarderLambda = new RustFunction(this, "ForwarderLambda", {
+      functionName: "forwarder-lambda",
+      description: `Processes logs from AWS Account ${this.account}`,
+      manifestPath: join(__dirname, "..", "functions/forwarder", "Cargo.toml"),
+      binaryName: "log_processor",
+      bundling: { cargoLambdaFlags: ["--quiet"] },
+      architecture: Architecture.ARM_64,
+      memorySize: 128,
+      loggingFormat: LoggingFormat.JSON,
+      environment: {
+        RUST_LOG: "info",
+        COLLECTORS_SECRETS_KEY_PREFIX,
+        COLLECTORS_CACHE_TTL_SECONDS: "300",
+        OTEL_SERVICE_NAME: "forwarder-lambda",
+        OTEL_EXPORTER_OTLP_ENDPOINT,
+        OTEL_EXPORTER_OTLP_HEADERS,
+        OTEL_EXPORTER_OTLP_PROTOCOL,
+      },
+    });
+    forwarderLambda.grantInvoke(new ServicePrincipal("logs.amazonaws.com"));
+    forwarderLambda.addToRolePolicy(
       new PolicyStatement({
         effect: Effect.ALLOW,
         actions: [
+          "secretsmanager:GetSecretValue",
           "secretsmanager:BatchGetSecretValue",
           "secretsmanager:ListSecrets",
-          "xray:PutTraceSegments",
-          "xray:PutSpans",
-          "xray:PutSpansForIndexing",
         ],
         resources: ["*"],
       }),
     );
 
-    kinesisProcessorFunction.addToRolePolicy(
-      new PolicyStatement({
-        effect: Effect.ALLOW,
-        actions: [
-          "kinesis:GetRecords",
-          "kinesis:GetShardIterator",
-          "kinesis:DescribeStream",
-          "kinesis:ListShards",
-        ],
-        resources: [otlpKinesisStream.streamArn],
-      }),
-    );
+    //==============================================================================
+    // CLOUDWATCH LOGS
+    //==============================================================================
 
-    // Add Kinesis as an event source for the Lambda function
-    kinesisProcessorFunction.addEventSource(
-      new KinesisEventSource(otlpKinesisStream, {
-        startingPosition: StartingPosition.LATEST,
-        batchSize: 100,
-        maxBatchingWindow: Duration.seconds(5),
-        reportBatchItemFailures: true,
-      }),
-    );
+    // Define the lambdas and their configurations
+    const lambdaConfigs = [
+      { lambda: backendLambda, name: "Backend" },
+      { lambda: frontendLambda, name: "Frontend" },
+      { lambda: clientNodeLambda, name: "ClientNode" },
+      { lambda: clientPythonLambda, name: "ClientPython" },
+      { lambda: clientRustLambda, name: "ClientRust" },
+    ];
 
-    // Outputs
-    new CfnOutput(this, "KinesisProcessorFunctionName", {
-      description: "Name of the Kinesis processor Lambda function",
-      value: kinesisProcessorFunction.functionName,
-    });
-
-    new CfnOutput(this, "KinesisProcessorFunctionArn", {
-      description: "ARN of the Kinesis processor Lambda function",
-      value: kinesisProcessorFunction.functionArn,
-    });
-
-    new CfnOutput(this, "OtlpKinesisStreamName", {
-      description: "Name of the Kinesis stream for OTLP data",
-      value: otlpKinesisStream.streamName,
-    });
-
-    if (hasVpcConfig) {
-      new CfnOutput(this, "KinesisProcessorSecurityGroupId", {
-        description:
-          "ID of the security group for the Kinesis processor Lambda function",
-        value: securityGroup!.securityGroupId,
+    // Create forwarder subscription for each lambda
+    lambdaConfigs.forEach(({ lambda, name }) => {
+      const logGroup = new LogGroup(this, `${name}LambdaLogGroup`, {
+        logGroupName: `/aws/lambda/${lambda.functionName}`,
+        retention: RetentionDays.ONE_WEEK,
+        removalPolicy: RemovalPolicy.DESTROY,
       });
-    }
+
+      new SubscriptionFilter(this, `${name}LambdaSubscription`, {
+        logGroup,
+        destination: new LambdaDestination(forwarderLambda),
+        filterPattern: FilterPattern.literal("{ $.__otel_otlp_stdout = * }"),
+      });
+
+      // Policy to avoid race condition
+      // (Lambda could recreate the log group if function is invoked while stack is being destroyed)
+      lambda.addToRolePolicy(
+        new PolicyStatement({
+          effect: Effect.DENY,
+          actions: ["logs:CreateLogGroup"],
+          resources: ["*"],
+        }),
+      );
+    });
+
+    //==============================================================================
+    // OUTPUTS
+    //==============================================================================
+
+    new CfnOutput(this, "QuotesApiUrl", {
+      value: `${backendApi.url}quotes`,
+    });
+
+    new CfnOutput(this, "FrontendLambdaUrl", {
+      value: frontendLambdaUrl.url,
+    });
+
+    new CfnOutput(this, "ClientRustLambdaUrl", {
+      value: clientRustLambdaUrl.url,
+    });
   }
 }
