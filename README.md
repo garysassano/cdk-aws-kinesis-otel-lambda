@@ -1,0 +1,1 @@
+# cdk-aws-kinesis-otel-lambda
