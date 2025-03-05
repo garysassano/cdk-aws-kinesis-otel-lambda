@@ -9,7 +9,11 @@ import {
 import { SecurityGroup, Vpc } from "aws-cdk-lib/aws-ec2";
 import { Effect, PolicyStatement } from "aws-cdk-lib/aws-iam";
 import { Stream, StreamMode } from "aws-cdk-lib/aws-kinesis";
-import { Architecture, StartingPosition } from "aws-cdk-lib/aws-lambda";
+import {
+  Architecture,
+  LoggingFormat,
+  StartingPosition,
+} from "aws-cdk-lib/aws-lambda";
 import { KinesisEventSource } from "aws-cdk-lib/aws-lambda-event-sources";
 import { Secret } from "aws-cdk-lib/aws-secretsmanager";
 import { RustFunction } from "cargo-lambda-cdk";
@@ -104,9 +108,16 @@ export class MyStack extends Stack {
       {
         functionName: this.stackName,
         description: `Processes OTLP data from Kinesis stream in AWS Account ${this.account}`,
-        manifestPath: join(__dirname, "processor", "Cargo.toml"),
+        manifestPath: join(
+          __dirname,
+          "..",
+          "functions/processor",
+          "Cargo.toml",
+        ),
+        bundling: { cargoLambdaFlags: ["--quiet"] },
         architecture: Architecture.ARM_64,
         timeout: Duration.seconds(60),
+        loggingFormat: LoggingFormat.JSON,
         environment: {
           RUST_LOG: "info",
           OTEL_SERVICE_NAME: this.stackName,
