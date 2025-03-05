@@ -15,7 +15,13 @@ import {
   RestApi,
 } from "aws-cdk-lib/aws-apigateway";
 import { AttributeType, TableV2 } from "aws-cdk-lib/aws-dynamodb";
-import { Effect, PolicyStatement, ServicePrincipal } from "aws-cdk-lib/aws-iam";
+import {
+  ArnPrincipal,
+  Effect,
+  PolicyStatement,
+  Role,
+  ServicePrincipal,
+} from "aws-cdk-lib/aws-iam";
 import { Stream, StreamMode } from "aws-cdk-lib/aws-kinesis";
 import {
   Architecture,
@@ -153,6 +159,81 @@ export class MyStack extends Stack {
 
     // Grant permissions to the frontendLambda to write to the Kinesis stream
     otlpKinesisStream.grantWrite(frontendLambda);
+
+    //==============================================================================
+    // CLICKHOUSE CLICKPIPES IAM ROLE
+    //==============================================================================
+
+    // Create an IAM role for ClickHouse ClickPipes to access Kinesis
+    // NOTE: You must replace 'CLICKHOUSE_IAM_ARN' with the actual ARN provided by ClickHouse
+    const CLICKHOUSE_IAM_ARN =
+      "arn:aws:iam::426924874929:role/CH-S3-bisque-uh-92-uw2-83-Role"; // Replace this with the actual ARN
+
+    const clickPipesKinesisRole = new Role(this, "ClickPipesKinesisRole", {
+      roleName: `ClickHouseAccessRole-${id}`, // Role name must start with ClickHouseAccessRole-
+      description: "Role for ClickHouse ClickPipes to access Kinesis stream",
+      // Trust policy to allow ClickHouse to assume this role
+      assumedBy: new ArnPrincipal(CLICKHOUSE_IAM_ARN),
+    });
+
+    // Add permissions to read from the Kinesis stream - using the exact permissions required
+    clickPipesKinesisRole.addToPolicy(
+      new PolicyStatement({
+        effect: Effect.ALLOW,
+        actions: [
+          "kinesis:DescribeStream",
+          "kinesis:GetShardIterator",
+          "kinesis:GetRecords",
+          "kinesis:ListShards",
+          "kinesis:SubscribeToShard",
+        ],
+        resources: [otlpKinesisStream.streamArn],
+      }),
+    );
+
+    // Add permissions for consumer operations on the stream
+    clickPipesKinesisRole.addToPolicy(
+      new PolicyStatement({
+        effect: Effect.ALLOW,
+        actions: [
+          "kinesis:DescribeStreamConsumer",
+          "kinesis:RegisterStreamConsumer",
+          "kinesis:DeregisterStreamConsumer",
+          "kinesis:ListStreamConsumers",
+        ],
+        resources: [
+          otlpKinesisStream.streamArn,
+          `${otlpKinesisStream.streamArn}/consumer/*`,
+        ],
+      }),
+    );
+
+    // Add permission to list all streams
+    clickPipesKinesisRole.addToPolicy(
+      new PolicyStatement({
+        effect: Effect.ALLOW,
+        actions: ["kinesis:ListStreams"],
+        resources: ["*"],
+      }),
+    );
+
+    // Output the role ARN to be used in ClickHouse ClickPipes configuration
+    new CfnOutput(this, "ClickPipesKinesisRoleArn", {
+      description:
+        "ARN of the IAM role for ClickHouse ClickPipes Kinesis integration",
+      value: clickPipesKinesisRole.roleArn,
+    });
+
+    // Output the Kinesis stream ARN and name for reference
+    new CfnOutput(this, "KinesisStreamArn", {
+      description: "ARN of the Kinesis stream",
+      value: otlpKinesisStream.streamArn,
+    });
+
+    new CfnOutput(this, "KinesisStreamName", {
+      description: "Name of the Kinesis stream",
+      value: otlpKinesisStream.streamName,
+    });
 
     //==============================================================================
     // API GATEWAY INTEGRATIONS
