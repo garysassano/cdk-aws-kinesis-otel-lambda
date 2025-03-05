@@ -16,6 +16,7 @@ import {
 } from "aws-cdk-lib/aws-apigateway";
 import { AttributeType, TableV2 } from "aws-cdk-lib/aws-dynamodb";
 import { Effect, PolicyStatement, ServicePrincipal } from "aws-cdk-lib/aws-iam";
+import { Stream, StreamMode } from "aws-cdk-lib/aws-kinesis";
 import {
   Architecture,
   FunctionUrlAuthType,
@@ -40,7 +41,6 @@ import { validateEnv } from "../utils/validate-env";
 // Constants
 const OTEL_EXPORTER_OTLP_PROTOCOL = "http/protobuf";
 const OTEL_EXPORTER_OTLP_COMPRESSION = "gzip";
-const COLLECTORS_SECRETS_KEY_PREFIX = "serverless-otlp-forwarder/keys/";
 
 // Required environment variables
 const { OTEL_EXPORTER_OTLP_ENDPOINT, OTEL_EXPORTER_OTLP_HEADERS } = validateEnv(
@@ -50,6 +50,14 @@ const { OTEL_EXPORTER_OTLP_ENDPOINT, OTEL_EXPORTER_OTLP_HEADERS } = validateEnv(
 export class MyStack extends Stack {
   constructor(scope: Construct, id: string, props: StackProps = {}) {
     super(scope, id, props);
+
+    // Constants for Kinesis configuration
+    const COLLECTORS_SECRETS_KEY_PREFIX = "serverless-otlp-forwarder/keys";
+    // const COLLECTORS_CACHE_TTL_SECONDS = 300;
+    // const KINESIS_STREAM_MODE = StreamMode.ON_DEMAND; // or StreamMode.PROVISIONED
+    const IS_PROVISIONED_MODE = false; // Set to true to use PROVISIONED mode with KINESIS_SHARD_COUNT
+    const KINESIS_SHARD_COUNT = 1; // only used if PROVISIONED mode
+    // const USE_VPC = false; // Whether to deploy in a VPC
 
     //==============================================================================
     // SECRETS MANAGER
@@ -358,6 +366,124 @@ export class MyStack extends Stack {
         }),
       );
     });
+
+    //==============================================================================
+    // KINESIS RESOURCES
+    //==============================================================================
+
+    // Create Kinesis Stream
+    new Stream(this, "OtlpKinesisStream", {
+      streamName: `${id}-otlp-stream`,
+      retentionPeriod: Duration.hours(24),
+      streamMode: IS_PROVISIONED_MODE
+        ? StreamMode.PROVISIONED
+        : StreamMode.ON_DEMAND,
+      shardCount: IS_PROVISIONED_MODE ? KINESIS_SHARD_COUNT : undefined,
+    });
+
+    /*
+    // Create security group for VPC deployment if needed
+    const hasVpcConfig = USE_VPC;
+    let kinesisProcessorSecurityGroup: SecurityGroup | undefined;
+    let vpc: IVpc | undefined;
+
+    if (hasVpcConfig) {
+      // Use the default VPC for simplicity
+      vpc = Vpc.fromLookup(this, "DefaultVpc", { isDefault: true });
+
+      kinesisProcessorSecurityGroup = new SecurityGroup(this, "KinesisProcessorSecurityGroup", {
+        vpc,
+        description: "Security group for OTLP Kinesis Processor Lambda",
+        allowAllOutbound: true,
+      });
+    }
+
+    // Create Kinesis Processor Lambda
+    const kinesisProcessorFunction = new RustFunction(this, "KinesisProcessorFunction", {
+      functionName: id,
+      description: `Processes OTLP data from Kinesis stream in AWS Account ${Stack.of(this).account}`,
+      manifestPath: join(__dirname, "..", "functions/processor", "Cargo.toml"),
+      binaryName: "bootstrap",
+      architecture: Architecture.ARM_64,
+      timeout: Duration.seconds(60),
+      environment: {
+        RUST_LOG: "info",
+        OTEL_SERVICE_NAME: id,
+        OTEL_EXPORTER_OTLP_ENDPOINT: `{{resolve:secretsmanager:${COLLECTORS_SECRETS_KEY_PREFIX}/default:SecretString:endpoint}}`,
+        OTEL_EXPORTER_OTLP_HEADERS: `{{resolve:secretsmanager:${COLLECTORS_SECRETS_KEY_PREFIX}/default:SecretString:auth}}`,
+        OTEL_EXPORTER_OTLP_PROTOCOL: "http/protobuf",
+        COLLECTORS_CACHE_TTL_SECONDS: COLLECTORS_CACHE_TTL_SECONDS.toString(),
+        COLLECTORS_SECRETS_KEY_PREFIX: COLLECTORS_SECRETS_KEY_PREFIX,
+      },
+      vpc: hasVpcConfig && vpc ? vpc : undefined,
+      vpcSubnets: hasVpcConfig && vpc ? { subnetType: SubnetType.PRIVATE_WITH_EGRESS } : undefined,
+      securityGroups: hasVpcConfig && kinesisProcessorSecurityGroup ? [kinesisProcessorSecurityGroup] : undefined,
+    });
+
+    // Add event source from Kinesis stream
+    kinesisProcessorFunction.addEventSource(new KinesisEventSource(otlpKinesisStream, {
+      startingPosition: StartingPosition.LATEST,
+      batchSize: 100,
+      maxBatchingWindow: Duration.seconds(5),
+      reportBatchItemFailures: true,
+    }));
+
+    // Add required permissions
+    kinesisProcessorFunction.addToRolePolicy(
+      new PolicyStatement({
+        effect: Effect.ALLOW,
+        actions: [
+          "secretsmanager:BatchGetSecretValue",
+          "secretsmanager:ListSecrets",
+          "xray:PutTraceSegments",
+          "xray:PutSpans",
+          "xray:PutSpansForIndexing",
+        ],
+        resources: ["*"],
+      })
+    );
+
+    kinesisProcessorFunction.addToRolePolicy(
+      new PolicyStatement({
+        effect: Effect.ALLOW,
+        actions: [
+          "secretsmanager:GetSecretValue",
+        ],
+        resources: [`arn:${Stack.of(this).partition}:secretsmanager:${Stack.of(this).region}:${Stack.of(this).account}:secret:${COLLECTORS_SECRETS_KEY_PREFIX}/*`],
+      })
+    );
+
+    kinesisProcessorFunction.addToRolePolicy(
+      new PolicyStatement({
+        effect: Effect.ALLOW,
+        actions: [
+          "kinesis:GetRecords",
+          "kinesis:GetShardIterator",
+          "kinesis:DescribeStream",
+          "kinesis:ListShards",
+        ],
+        resources: [otlpKinesisStream.streamArn],
+      })
+    );
+
+    // Add outputs
+    new CfnOutput(this, "KinesisProcessorFunctionName", {
+      description: "Name of the Kinesis processor Lambda function",
+      value: kinesisProcessorFunction.functionName,
+    });
+
+    new CfnOutput(this, "KinesisProcessorFunctionArn", {
+      description: "ARN of the Kinesis processor Lambda function",
+      value: kinesisProcessorFunction.functionArn,
+    });
+
+    if (hasVpcConfig && kinesisProcessorSecurityGroup) {
+      new CfnOutput(this, "KinesisProcessorSecurityGroupId", {
+        description: "ID of the security group for the Kinesis processor Lambda function",
+        value: kinesisProcessorSecurityGroup.securityGroupId,
+      });
+    }
+    */
 
     //==============================================================================
     // OUTPUTS
