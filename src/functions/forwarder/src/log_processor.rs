@@ -1,9 +1,9 @@
-//! AWS Lambda function that forwards Kinesis wrapped OTLP records to OpenTelemetry collectors.
+//! AWS Lambda function that forwards CloudWatch log wrapped OTLP records to OpenTelemetry collectors.
 //!
 //! This Lambda function:
-//! 1. Receives Kinesis events containing otlp-stdout format records
-//! 2. Decodes and decompresses the data
-//! 3. Converts records to TelemetryData
+//! 1. Receives CloudWatch log events as otlp-stout format
+//! 2. Decodes and decompresses the log data
+//! 3. Converts logs to TelemetryData
 //! 4. Forwards the data to collectors in parallel
 //!
 //! The function supports:
@@ -14,7 +14,7 @@
 //! - OpenTelemetry instrumentation
 
 use anyhow::{Context, Result};
-use aws_lambda_events::event::kinesis::KinesisEvent;
+use aws_lambda_events::event::cloudwatch_logs::{LogEntry, LogsEvent};
 use aws_sdk_secretsmanager::Client as SecretsManagerClient;
 use lambda_otel_utils::{HttpTracerProviderBuilder, OpenTelemetrySubscriberBuilder};
 use lambda_runtime::{
@@ -58,22 +58,21 @@ impl AppState {
     }
 }
 
-/// Convert a Kinesis record into TelemetryData
-fn convert_kinesis_record(record: &aws_lambda_events::event::kinesis::KinesisEventRecord) -> Result<TelemetryData> {
-    let data = String::from_utf8(record.kinesis.data.0.clone())
-        .context("Failed to decode Kinesis record data as UTF-8")?;
+/// Convert a CloudWatch log event into TelemetryData
+fn convert_log_event(event: &LogEntry) -> Result<TelemetryData> {
+    let record = &event.message;
 
     // Parse as a standard LogRecord
-    let log_record = serde_json::from_str(&data)
-        .with_context(|| format!("Failed to parse Kinesis record: {}", data))?;
+    let log_record = serde_json::from_str(record)
+        .with_context(|| format!("Failed to parse log record: {}", record))?;
 
     // Convert to TelemetryData
     TelemetryData::from_log_record(log_record)
 }
 
-#[instrument(skip_all, fields(otel.kind="consumer", forwarder.stream.name, forwarder.events.count))]
+#[instrument(skip_all, fields(otel.kind="consumer", forwarder.log.group, forwarder.events.count))]
 async fn function_handler(
-    event: LambdaEvent<KinesisEvent>,
+    event: LambdaEvent<LogsEvent>,
     state: Arc<AppState>,
 ) -> Result<(), LambdaError> {
     tracing::debug!("Function handler started");
@@ -81,20 +80,18 @@ async fn function_handler(
     // Check and refresh collectors cache if stale
     Collectors::init(&state.secrets_client).await?;
 
-    let records = event.payload.records;
+    let log_group = event.payload.aws_logs.data.log_group;
+    let log_events = event.payload.aws_logs.data.log_events;
     let current_span = tracing::Span::current();
-    current_span.record("forwarder.events.count", records.len());
-    if let Some(first_record) = records.first() {
-        current_span.record("forwarder.stream.name", &first_record.event_source);
-    }
-
-    // Convert all records to TelemetryData (sequentially)
-    let telemetry_records = records
+    current_span.record("forwarder.events.count", log_events.len());
+    current_span.record("forwarder.log_group", &log_group);
+    // Convert all events to TelemetryData (sequentially)
+    let telemetry_records = log_events
         .iter()
-        .filter_map(|record| match convert_kinesis_record(record) {
+        .filter_map(|event| match convert_log_event(event) {
             Ok(telemetry) => Some(telemetry),
             Err(e) => {
-                tracing::warn!("Failed to convert Kinesis record: {}", e);
+                tracing::warn!("Failed to convert span event: {}", e);
                 None
             }
         })
@@ -147,7 +144,7 @@ async fn main() -> Result<(), LambdaError> {
     OpenTelemetrySubscriberBuilder::new()
         .with_env_filter(true)
         .with_tracer_provider(tracer_provider.clone())
-        .with_service_name("serverless-otlp-forwarder-kinesis")
+        .with_service_name("serverless-otlp-forwarder-logs")
         .init()?;
 
     // Initialize shared application state
@@ -173,15 +170,12 @@ async fn main() -> Result<(), LambdaError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aws_lambda_events::event::kinesis::{KinesisEventRecord, KinesisRecord};
-    use aws_lambda_events::kinesis::KinesisEncryptionType;
+    use serde_json::json;
 
     #[test]
-    fn test_convert_kinesis_record() {
-        use aws_lambda_events::encodings::SecondTimestamp;
-        use chrono::{TimeZone, Utc};
-        // This is the raw string that the extension sends to Kinesis
-        let record_str = r#"{
+    fn test_convert_log_event() {
+        // Test standard LogRecord
+        let log_record = json!({
             "__otel_otlp_stdout": "otlp-stdout-client@0.2.2",
             "source": "test-service",
             "endpoint": "http://example.com",
@@ -193,29 +187,17 @@ mod tests {
             "content-type": "application/json",
             "content-encoding": "gzip",
             "base64": false
-        }"#;
+        });
 
-        let record = KinesisEventRecord {
-            kinesis: KinesisRecord {
-                data: aws_lambda_events::encodings::Base64Data(record_str.as_bytes().to_vec()),
-                partition_key: "test-key".to_string(),
-                sequence_number: "test-sequence".to_string(),
-                kinesis_schema_version: Some("1.0".to_string()),
-                encryption_type: KinesisEncryptionType::None,
-                approximate_arrival_timestamp: SecondTimestamp(Utc.timestamp_opt(1234567890, 0).unwrap()),
-            },
-            aws_region: Some("us-east-1".to_string()),
-            event_id: Some("test-event-id".to_string()),
-            event_name: Some("aws:kinesis:record".to_string()),
-            event_source: Some("aws:kinesis".to_string()),
-            event_source_arn: Some("arn:aws:kinesis:us-east-1:123456789012:stream/test-stream".to_string()),
-            event_version: Some("1.0".to_string()),
-            invoke_identity_arn: Some("arn:aws:iam::123456789012:role/test-role".to_string()),
+        let event = LogEntry {
+            id: "test-id".to_string(),
+            timestamp: 1234567890,
+            message: serde_json::to_string(&log_record).unwrap(),
         };
 
-        let result = convert_kinesis_record(&record);
+        let result = convert_log_event(&event);
         if let Err(e) = &result {
-            println!("Error converting Kinesis record: {}", e);
+            println!("Error converting log event: {}", e);
         }
         assert!(result.is_ok());
         let telemetry = result.unwrap();
@@ -223,4 +205,4 @@ mod tests {
         assert_eq!(telemetry.content_type, "application/json");
         assert_eq!(telemetry.content_encoding, Some("gzip".to_string()));
     }
-} 
+}
