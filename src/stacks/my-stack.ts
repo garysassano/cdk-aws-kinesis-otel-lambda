@@ -92,6 +92,17 @@ export class MyStack extends Stack {
     backendApi.node.tryRemoveChild("Endpoint");
 
     //==============================================================================
+    // KINESIS RESOURCES
+    //==============================================================================
+
+    // Create Kinesis Stream
+    const otlpKinesisStream = new Stream(this, "OtlpKinesisStream", {
+      streamName: `${id}-otlp-stream`,
+      retentionPeriod: Duration.hours(24),
+      streamMode: StreamMode.ON_DEMAND,
+    });
+
+    //==============================================================================
     // LAMBDA - SERVICE FUNCTIONS
     //==============================================================================
 
@@ -133,11 +144,15 @@ export class MyStack extends Stack {
         OTEL_EXPORTER_OTLP_ENDPOINT,
         OTEL_EXPORTER_OTLP_PROTOCOL,
         OTEL_EXPORTER_OTLP_COMPRESSION,
+        OTLP_STDOUT_KINESIS_STREAM_NAME: otlpKinesisStream.streamName,
       },
     });
     const frontendLambdaUrl = frontendLambda.addFunctionUrl({
       authType: FunctionUrlAuthType.NONE,
     });
+
+    // Grant permissions to the frontendLambda to write to the Kinesis stream
+    otlpKinesisStream.grantWrite(frontendLambda);
 
     //==============================================================================
     // API GATEWAY INTEGRATIONS
@@ -360,17 +375,6 @@ export class MyStack extends Stack {
           resources: ["*"],
         }),
       );
-    });
-
-    //==============================================================================
-    // KINESIS RESOURCES
-    //==============================================================================
-
-    // Create Kinesis Stream
-    new Stream(this, "OtlpKinesisStream", {
-      streamName: `${id}-otlp-stream`,
-      retentionPeriod: Duration.hours(24),
-      streamMode: StreamMode.ON_DEMAND,
     });
 
     /*
