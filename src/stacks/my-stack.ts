@@ -148,8 +148,7 @@ export class MyStack extends Stack {
         TARGET_URL: backendApi.url,
         OTEL_SERVICE_NAME: "frontend-lambda",
         OTEL_EXPORTER_OTLP_ENDPOINT,
-        OTEL_EXPORTER_OTLP_PROTOCOL,
-        OTEL_EXPORTER_OTLP_COMPRESSION,
+        OTEL_EXPORTER_OTLP_PROTOCOL: "http/json",
         OTLP_STDOUT_KINESIS_STREAM_NAME: otlpKinesisStream.streamName,
       },
     });
