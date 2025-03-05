@@ -45,6 +45,7 @@
   },
   "dependencies": {
     "aws-cdk-lib": "^2.1.0",
+    "cargo-lambda-cdk": "^0.0.32",
     "constructs": "^10.0.5"
   },
   "pnpm": {},

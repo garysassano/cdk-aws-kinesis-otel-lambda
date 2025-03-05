@@ -1,168 +1,156 @@
-import { join } from "path";
-import {
-  CfnOutput,
-  Duration,
-  RemovalPolicy,
-  Stack,
-  StackProps,
-} from "aws-cdk-lib";
-import {
-  CorsHttpMethod,
-  HttpApi,
-  HttpMethod,
-} from "aws-cdk-lib/aws-apigatewayv2";
-import { HttpLambdaIntegration } from "aws-cdk-lib/aws-apigatewayv2-integrations";
-import { Distribution, PriceClass } from "aws-cdk-lib/aws-cloudfront";
-import { S3BucketOrigin } from "aws-cdk-lib/aws-cloudfront-origins";
-import { TableV2, AttributeType } from "aws-cdk-lib/aws-dynamodb";
-import { PolicyStatement } from "aws-cdk-lib/aws-iam";
-import { Architecture, Runtime, LoggingFormat } from "aws-cdk-lib/aws-lambda";
-import { NodejsFunction } from "aws-cdk-lib/aws-lambda-nodejs";
-import { Bucket, EventType, HttpMethods } from "aws-cdk-lib/aws-s3";
-import { BucketDeployment, Source } from "aws-cdk-lib/aws-s3-deployment";
-import { LambdaDestination } from "aws-cdk-lib/aws-s3-notifications";
+import { CfnOutput, Duration, Fn, Stack, StackProps } from "aws-cdk-lib";
+import { SecurityGroup, Vpc } from "aws-cdk-lib/aws-ec2";
+import { Effect, PolicyStatement } from "aws-cdk-lib/aws-iam";
+import { Stream, StreamMode } from "aws-cdk-lib/aws-kinesis";
+import { Architecture, StartingPosition } from "aws-cdk-lib/aws-lambda";
+import { KinesisEventSource } from "aws-cdk-lib/aws-lambda-event-sources";
+import { RustFunction } from "cargo-lambda-cdk";
 import { Construct } from "constructs";
+import { join } from "path";
+
+export interface MyStackProps extends StackProps {
+  collectorsSecretsKeyPrefix?: string;
+  collectorsCacheTtlSeconds?: number;
+  vpcId?: string;
+  subnetIds?: string[];
+  kinesisStreamMode?: string;
+  shardCount?: number;
+}
 
 export class MyStack extends Stack {
-  constructor(scope: Construct, id: string, props: StackProps = {}) {
+  constructor(scope: Construct, id: string, props: MyStackProps = {}) {
     super(scope, id, props);
 
-    // Generate a unique ID for resource naming
-    const uniqueId = this.node.addr.substring(0, 8);
+    // Set default values for parameters
+    const collectorsSecretsKeyPrefix =
+      props.collectorsSecretsKeyPrefix || "serverless-otlp-forwarder/keys";
+    const collectorsCacheTtlSeconds = props.collectorsCacheTtlSeconds || 300;
+    const vpcId = props.vpcId || "";
+    const subnetIds = props.subnetIds || [];
+    const kinesisStreamMode = props.kinesisStreamMode || "PROVISIONED";
+    const shardCount = props.shardCount || 1;
 
-    // S3 bucket for hosting the static website
-    const websiteBucket = new Bucket(this, "WebsiteBucket", {
-      bucketName: `website-bucket-${uniqueId}`,
-      enforceSSL: true,
-      removalPolicy: RemovalPolicy.DESTROY,
-      autoDeleteObjects: true,
+    // Check conditions (similar to the SAM template)
+    const isProvisionedMode = kinesisStreamMode === "PROVISIONED";
+    const hasVpcConfig = vpcId !== "";
+
+    // Create Kinesis Stream
+    const otlpKinesisStream = new Stream(this, "OtlpKinesisStream", {
+      streamName: `${this.stackName}-otlp-stream`,
+      streamMode: isProvisionedMode
+        ? StreamMode.PROVISIONED
+        : StreamMode.ON_DEMAND,
+      shardCount: isProvisionedMode ? shardCount : undefined,
+      retentionPeriod: Duration.hours(24),
     });
 
-    // CloudFront distribution to serve the website from S3 bucket via OAC
-    const websiteDistribution = new Distribution(this, "WebsiteDistribution", {
-      defaultBehavior: {
-        origin: S3BucketOrigin.withOriginAccessControl(websiteBucket),
-      },
-      defaultRootObject: "index.html",
-      priceClass: PriceClass.PRICE_CLASS_100,
-    });
+    // Create Security Group if VPC config is provided
+    let securityGroup;
+    let vpc;
 
-    // S3 bucket for storing images to be processed by Rekognition
-    const rekognitionBucket = new Bucket(this, "RekognitionBucket", {
-      bucketName: `rekognition-bucket-${uniqueId}`,
-      enforceSSL: true,
-      removalPolicy: RemovalPolicy.DESTROY,
-      autoDeleteObjects: true,
-      cors: [
-        {
-          allowedOrigins: [
-            `https://${websiteDistribution.distributionDomainName}`,
-          ],
-          allowedMethods: [HttpMethods.PUT],
-          allowedHeaders: ["*"],
-          maxAge: 300,
+    if (hasVpcConfig) {
+      vpc = Vpc.fromVpcAttributes(this, "ImportedVpc", {
+        vpcId: vpcId,
+        availabilityZones: Fn.getAzs(),
+        privateSubnetIds: subnetIds,
+      });
+
+      securityGroup = new SecurityGroup(this, "KinesisProcessorSecurityGroup", {
+        vpc,
+        description: "Security group for OTLP Kinesis Processor Lambda",
+        allowAllOutbound: true,
+      });
+    }
+
+    // Create Lambda Function for processing Kinesis events
+    const kinesisProcessorFunction = new RustFunction(
+      this,
+      "KinesisProcessorFunction",
+      {
+        functionName: this.stackName,
+        description: `Processes OTLP data from Kinesis stream in AWS Account ${this.account}`,
+        manifestPath: join(__dirname, "functions/processor", "Cargo.toml"),
+        architecture: Architecture.ARM_64,
+        timeout: Duration.seconds(60),
+        environment: {
+          RUST_LOG: "info",
+          OTEL_SERVICE_NAME: this.stackName,
+          OTEL_EXPORTER_OTLP_ENDPOINT: `{{resolve:secretsmanager:${collectorsSecretsKeyPrefix}/default:SecretString:endpoint}}`,
+          OTEL_EXPORTER_OTLP_HEADERS: `{{resolve:secretsmanager:${collectorsSecretsKeyPrefix}/default:SecretString:auth}}`,
+          OTEL_EXPORTER_OTLP_PROTOCOL: "http/protobuf",
+          COLLECTORS_CACHE_TTL_SECONDS: collectorsCacheTtlSeconds.toString(),
+          COLLECTORS_SECRETS_KEY_PREFIX: `${collectorsSecretsKeyPrefix}/`,
         },
-      ],
-    });
-
-    // DynamoDB table for idempotency
-    const idempotencyTable = new TableV2(this, "IdempotencyTable", {
-      tableName: `idempotency-table-${uniqueId}`,
-      partitionKey: {
-        name: "id",
-        type: AttributeType.STRING,
+        vpc: hasVpcConfig ? vpc : undefined,
+        securityGroups: hasVpcConfig ? [securityGroup!] : undefined,
       },
-      timeToLiveAttribute: "expiration",
-      removalPolicy: RemovalPolicy.DESTROY,
-    });
+    );
 
-    // Lambda function to process images uploaded to the rekognition bucket
-    const rekognitionLambda = new NodejsFunction(this, `RekognitionLambda`, {
-      functionName: `rekognition-lambda-${uniqueId}`,
-      entry: join(__dirname, "..", "functions", "rekognition", "index.ts"),
-      runtime: Runtime.NODEJS_22_X,
-      architecture: Architecture.ARM_64,
-      timeout: Duration.minutes(1),
-      memorySize: 1024,
-      loggingFormat: LoggingFormat.JSON,
-      environment: {
-        IDEMPOTENCY_TABLE_NAME: idempotencyTable.tableName,
-      },
-    });
-
-    // Grant permissions to rekognition Lambda function
-    idempotencyTable.grantReadWriteData(rekognitionLambda);
-    rekognitionBucket.grantRead(rekognitionLambda);
-    rekognitionLambda.addToRolePolicy(
+    // Add IAM policies to the Lambda function
+    kinesisProcessorFunction.addToRolePolicy(
       new PolicyStatement({
-        actions: ["rekognition:DetectLabels"],
+        effect: Effect.ALLOW,
+        actions: [
+          "secretsmanager:BatchGetSecretValue",
+          "secretsmanager:ListSecrets",
+          "xray:PutTraceSegments",
+          "xray:PutSpans",
+          "xray:PutSpansForIndexing",
+        ],
         resources: ["*"],
       }),
     );
 
-    // Trigger Lambda function on object upload to S3
-    rekognitionBucket.addEventNotification(
-      EventType.OBJECT_CREATED,
-      new LambdaDestination(rekognitionLambda),
+    kinesisProcessorFunction.addToRolePolicy(
+      new PolicyStatement({
+        effect: Effect.ALLOW,
+        actions: ["secretsmanager:GetSecretValue"],
+        resources: [
+          `arn:${this.partition}:secretsmanager:${this.region}:${this.account}:secret:${collectorsSecretsKeyPrefix}/*`,
+        ],
+      }),
     );
 
-    // Lambda function to generate presigned URLs for S3 uploads
-    const presignLambda = new NodejsFunction(this, "PresignLambda", {
-      functionName: `presign-lambda-${uniqueId}`,
-      entry: join(__dirname, "..", "functions", "presign", "index.ts"),
-      runtime: Runtime.NODEJS_22_X,
-      architecture: Architecture.ARM_64,
-      timeout: Duration.minutes(1),
-      memorySize: 1024,
-      loggingFormat: LoggingFormat.JSON,
-      environment: {
-        REKOGNITION_BUCKET_NAME: rekognitionBucket.bucketName,
-      },
-    });
-
-    // Grant permissions to presign Lambda function
-    rekognitionBucket.grantPut(presignLambda);
-
-    // Create an HTTP API with CORS enabled
-    const httpApi = new HttpApi(this, "HttpApi", {
-      apiName: `http-api-${uniqueId}`,
-      corsPreflight: {
-        allowOrigins: [`https://${websiteDistribution.distributionDomainName}`],
-        allowMethods: [CorsHttpMethod.POST],
-        allowHeaders: ["Content-Type"],
-        maxAge: Duration.minutes(5),
-      },
-    });
-
-    // Trigger Lambda function on HTTP requests
-    const httpApiLambdaIntegration = new HttpLambdaIntegration(
-      "HttpApiLambdaIntegration",
-      presignLambda,
+    kinesisProcessorFunction.addToRolePolicy(
+      new PolicyStatement({
+        effect: Effect.ALLOW,
+        actions: [
+          "kinesis:GetRecords",
+          "kinesis:GetShardIterator",
+          "kinesis:DescribeStream",
+          "kinesis:ListShards",
+        ],
+        resources: [otlpKinesisStream.streamArn],
+      }),
     );
 
-    // Add a route with Lambda integration
-    httpApi.addRoutes({
-      path: "/presign",
-      methods: [HttpMethod.POST],
-      integration: httpApiLambdaIntegration,
+    // Add Kinesis as an event source for the Lambda function
+    kinesisProcessorFunction.addEventSource(
+      new KinesisEventSource(otlpKinesisStream, {
+        startingPosition: StartingPosition.LATEST,
+        batchSize: 100,
+        maxBatchingWindow: Duration.seconds(5),
+        reportBatchItemFailures: true,
+      }),
+    );
+
+    // Outputs
+    new CfnOutput(this, "KinesisProcessorFunctionName", {
+      description: "Name of the Kinesis processor Lambda function",
+      value: kinesisProcessorFunction.functionName,
     });
 
-    // Deploy the static website files to the S3 bucket
-    new BucketDeployment(this, "WebsiteBucketDeployment", {
-      sources: [
-        Source.asset(join(__dirname, "..", "website")),
-        Source.jsonData("config.json", {
-          apiEndpointUrl: httpApi.apiEndpoint,
-        }),
-      ],
-      destinationBucket: websiteBucket,
-      distribution: websiteDistribution,
-      distributionPaths: ["/index.html"],
+    new CfnOutput(this, "KinesisProcessorFunctionArn", {
+      description: "ARN of the Kinesis processor Lambda function",
+      value: kinesisProcessorFunction.functionArn,
     });
 
-    // Output the CloudFront distribution URL
-    new CfnOutput(this, "WebsiteDistributionUrl", {
-      value: `https://${websiteDistribution.distributionDomainName}`,
-    });
+    if (hasVpcConfig) {
+      new CfnOutput(this, "KinesisProcessorSecurityGroupId", {
+        description:
+          "ID of the security group for the Kinesis processor Lambda function",
+        value: securityGroup!.securityGroupId,
+      });
+    }
   }
 }
