@@ -53,11 +53,6 @@ export class MyStack extends Stack {
 
     // Constants for Kinesis configuration
     const COLLECTORS_SECRETS_KEY_PREFIX = "serverless-otlp-forwarder/keys";
-    // const COLLECTORS_CACHE_TTL_SECONDS = 300;
-    // const KINESIS_STREAM_MODE = StreamMode.ON_DEMAND; // or StreamMode.PROVISIONED
-    const IS_PROVISIONED_MODE = false; // Set to true to use PROVISIONED mode with KINESIS_SHARD_COUNT
-    const KINESIS_SHARD_COUNT = 1; // only used if PROVISIONED mode
-    // const USE_VPC = false; // Whether to deploy in a VPC
 
     //==============================================================================
     // SECRETS MANAGER
@@ -375,10 +370,7 @@ export class MyStack extends Stack {
     new Stream(this, "OtlpKinesisStream", {
       streamName: `${id}-otlp-stream`,
       retentionPeriod: Duration.hours(24),
-      streamMode: IS_PROVISIONED_MODE
-        ? StreamMode.PROVISIONED
-        : StreamMode.ON_DEMAND,
-      shardCount: IS_PROVISIONED_MODE ? KINESIS_SHARD_COUNT : undefined,
+      streamMode: StreamMode.ON_DEMAND,
     });
 
     /*
