@@ -1,0 +1,92 @@
+{
+  "resourceSpans": [
+    {
+      "resource": {
+        "attributes": [
+          { "key": "service.name", "value": { "stringValue": "hello-world" } },
+          {
+            "key": "telemetry.sdk.language",
+            "value": { "stringValue": "rust" }
+          },
+          {
+            "key": "telemetry.sdk.name",
+            "value": { "stringValue": "opentelemetry" }
+          },
+          {
+            "key": "telemetry.sdk.version",
+            "value": { "stringValue": "0.28.0" }
+          }
+        ],
+        "droppedAttributesCount": 0
+      },
+      "scopeSpans": [
+        {
+          "scope": {
+            "name": "hello-world",
+            "version": "",
+            "attributes": [],
+            "droppedAttributesCount": 0
+          },
+          "spans": [
+            {
+              "traceId": "315aa832608ab0edd5f422b323c53884",
+              "spanId": "c6314f0d4d05b1bf",
+              "traceState": "",
+              "parentSpanId": "9d1797d954143cbd",
+              "flags": 1,
+              "name": "child1",
+              "kind": 1,
+              "startTimeUnixNano": "1741804367941890102",
+              "endTimeUnixNano": "1741804367941891619",
+              "attributes": [],
+              "droppedAttributesCount": 0,
+              "events": [],
+              "droppedEventsCount": 0,
+              "links": [],
+              "droppedLinksCount": 0,
+              "status": { "message": "", "code": 0 }
+            },
+            {
+              "traceId": "315aa832608ab0edd5f422b323c53884",
+              "spanId": "8385d3ca6234e649",
+              "traceState": "",
+              "parentSpanId": "9d1797d954143cbd",
+              "flags": 1,
+              "name": "child2",
+              "kind": 1,
+              "startTimeUnixNano": "1741804367941893853",
+              "endTimeUnixNano": "1741804367941894494",
+              "attributes": [],
+              "droppedAttributesCount": 0,
+              "events": [],
+              "droppedEventsCount": 0,
+              "links": [],
+              "droppedLinksCount": 0,
+              "status": { "message": "", "code": 0 }
+            },
+            {
+              "traceId": "315aa832608ab0edd5f422b323c53884",
+              "spanId": "9d1797d954143cbd",
+              "traceState": "",
+              "parentSpanId": "",
+              "flags": 1,
+              "name": "parent-operation",
+              "kind": 1,
+              "startTimeUnixNano": "1741804367941886373",
+              "endTimeUnixNano": "1741804367941895082",
+              "attributes": [],
+              "droppedAttributesCount": 0,
+              "events": [],
+              "droppedEventsCount": 0,
+              "links": [],
+              "droppedLinksCount": 0,
+              "status": { "message": "", "code": 0 }
+            }
+          ],
+          "schemaUrl": ""
+        }
+      ],
+      "schemaUrl": ""
+    }
+  ]
+}
