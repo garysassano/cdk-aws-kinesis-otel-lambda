@@ -18,12 +18,12 @@ This crate provides an implementation of OpenTelemetry's `SpanExporter` that wri
 ```rust
 use opentelemetry::trace::{Tracer, TracerProvider};
 use opentelemetry_sdk::trace::SdkTracerProvider;
-use custom_stdout_exporter::OtlpStdoutSpanExporter;
+use custom_stdout_exporter::CustomStdoutSpanExporter;
 
 #[tokio::main]
 async fn main() {
     // Create a new stdout exporter
-    let exporter = OtlpStdoutSpanExporter::new();
+    let exporter = CustomStdoutSpanExporter::new();
 
     // Create a new tracer provider with batch export
     let provider = SdkTracerProvider::builder()
@@ -53,12 +53,12 @@ async fn main() {
 ```rust
 use opentelemetry::trace::{Tracer, TracerProvider};
 use opentelemetry_sdk::trace::SdkTracerProvider;
-use custom_stdout_exporter::{OtlpStdoutSpanExporter, OutputFormat};
+use custom_stdout_exporter::{CustomStdoutSpanExporter, OutputFormat};
 
 #[tokio::main]
 async fn main() {
     // Create a new stdout exporter with ClickHouse format
-    let exporter = OtlpStdoutSpanExporter::with_format(OutputFormat::ClickHouse);
+    let exporter = CustomStdoutSpanExporter::with_format(OutputFormat::ClickHouse);
 
     // Create a new tracer provider with batch export
     let provider = SdkTracerProvider::builder()

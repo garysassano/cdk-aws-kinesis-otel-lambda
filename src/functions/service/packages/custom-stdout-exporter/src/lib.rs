@@ -16,12 +16,12 @@
 //! ```rust,no_run
 //! use opentelemetry::trace::{Tracer, TracerProvider};
 //! use opentelemetry_sdk::{trace::SdkTracerProvider, Resource};
-//! use custom_stdout_exporter::OtlpStdoutSpanExporter;
+//! use custom_stdout_exporter::CustomStdoutSpanExporter;
 //!
 //! #[tokio::main]
 //! async fn main() {
 //!     // Create a new stdout exporter
-//!     let exporter = OtlpStdoutSpanExporter::new();
+//!     let exporter = CustomStdoutSpanExporter::new();
 //!
 //!     // Create a new tracer provider with batch export
 //!     let provider = SdkTracerProvider::builder()
@@ -184,16 +184,16 @@ impl Output for TestOutput {
 ///
 /// ```rust,no_run
 /// use opentelemetry_sdk::runtime;
-/// use custom_stdout_exporter::{OtlpStdoutSpanExporter, OutputFormat};
+/// use custom_stdout_exporter::{CustomStdoutSpanExporter, OutputFormat};
 ///
 /// // Create a new exporter with default OTLP format
-/// let exporter = OtlpStdoutSpanExporter::new();
+/// let exporter = CustomStdoutSpanExporter::new();
 ///
 /// // Or create with ClickHouse format
-/// let clickhouse_exporter = OtlpStdoutSpanExporter::with_format(OutputFormat::ClickHouse);
+/// let clickhouse_exporter = CustomStdoutSpanExporter::with_format(OutputFormat::ClickHouse);
 /// ```
 #[derive(Debug)]
-pub struct OtlpStdoutSpanExporter {
+pub struct CustomStdoutSpanExporter {
     /// Optional resource to be included with all spans
     resource: Option<Resource>,
     /// Output implementation (stdout or test buffer)
@@ -202,21 +202,21 @@ pub struct OtlpStdoutSpanExporter {
     format: OutputFormat,
 }
 
-impl Default for OtlpStdoutSpanExporter {
+impl Default for CustomStdoutSpanExporter {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl OtlpStdoutSpanExporter {
+impl CustomStdoutSpanExporter {
     /// Creates a new exporter with default OTLP format
     ///
     /// # Example
     ///
     /// ```rust
-    /// use custom_stdout_exporter::OtlpStdoutSpanExporter;
+    /// use custom_stdout_exporter::CustomStdoutSpanExporter;
     ///
-    /// let exporter = OtlpStdoutSpanExporter::new();
+    /// let exporter = CustomStdoutSpanExporter::new();
     /// ```
     pub fn new() -> Self {
         Self {
@@ -231,9 +231,9 @@ impl OtlpStdoutSpanExporter {
     /// # Example
     ///
     /// ```rust
-    /// use custom_stdout_exporter::{OtlpStdoutSpanExporter, OutputFormat};
+    /// use custom_stdout_exporter::{CustomStdoutSpanExporter, OutputFormat};
     ///
-    /// let exporter = OtlpStdoutSpanExporter::with_format(OutputFormat::ClickHouse);
+    /// let exporter = CustomStdoutSpanExporter::with_format(OutputFormat::ClickHouse);
     /// ```
     pub fn with_format(format: OutputFormat) -> Self {
         Self {
@@ -267,7 +267,7 @@ impl OtlpStdoutSpanExporter {
 }
 
 #[async_trait]
-impl SpanExporter for OtlpStdoutSpanExporter {
+impl SpanExporter for CustomStdoutSpanExporter {
     /// Export spans to stdout in the configured format
     ///
     /// This function converts spans to the specified format and outputs them directly as JSON.
@@ -386,7 +386,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_export() {
-        let (mut exporter, output) = OtlpStdoutSpanExporter::with_test_output();
+        let (mut exporter, output) = CustomStdoutSpanExporter::with_test_output();
         let span = create_test_span();
 
         let result = exporter.export(vec![span]).await;
@@ -409,7 +409,7 @@ mod tests {
     #[tokio::test]
     async fn test_export_clickhouse_format() {
         let (mut exporter, output) =
-            OtlpStdoutSpanExporter::with_test_output_and_format(OutputFormat::ClickHouse);
+            CustomStdoutSpanExporter::with_test_output_and_format(OutputFormat::ClickHouse);
         let span = create_test_span();
 
         let result = exporter.export(vec![span]).await;
@@ -437,7 +437,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_export_plain_json() {
-        let (mut exporter, output) = OtlpStdoutSpanExporter::with_test_output();
+        let (mut exporter, output) = CustomStdoutSpanExporter::with_test_output();
         let span = create_test_span();
 
         let result = exporter.export(vec![span]).await;
