@@ -1,6 +1,6 @@
 use opentelemetry::trace::{Tracer, TracerProvider};
 use opentelemetry_sdk::{trace::SdkTracerProvider, Resource};
-use otlp_stdout_span_exporter::OtlpStdoutSpanExporter;
+use custom_stdout_exporter::OtlpStdoutSpanExporter;
 
 #[tokio::main]
 async fn main() {

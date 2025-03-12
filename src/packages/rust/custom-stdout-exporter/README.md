@@ -18,7 +18,7 @@ This crate provides an implementation of OpenTelemetry's `SpanExporter` that wri
 ```rust
 use opentelemetry::trace::{Tracer, TracerProvider};
 use opentelemetry_sdk::trace::SdkTracerProvider;
-use otlp_stdout_span_exporter::OtlpStdoutSpanExporter;
+use custom_stdout_exporter::OtlpStdoutSpanExporter;
 
 #[tokio::main]
 async fn main() {
@@ -53,7 +53,7 @@ async fn main() {
 ```rust
 use opentelemetry::trace::{Tracer, TracerProvider};
 use opentelemetry_sdk::trace::SdkTracerProvider;
-use otlp_stdout_span_exporter::{OtlpStdoutSpanExporter, OutputFormat};
+use custom_stdout_exporter::{OtlpStdoutSpanExporter, OutputFormat};
 
 #[tokio::main]
 async fn main() {

@@ -1,12 +1,10 @@
 use aws_lambda_events::apigw::ApiGatewayV2httpRequest;
 use lambda_lw_http_router::{define_router, route};
-use lambda_otel_utils::{
-    OpenTelemetryFaasTrigger, OpenTelemetryLayer, OpenTelemetrySubscriberBuilder,
-};
+use lambda_otel_utils::{OpenTelemetryFaasTrigger, OpenTelemetryLayer};
 use lambda_runtime::{service_fn, Error, LambdaEvent, Runtime};
 use opentelemetry::trace::TracerProvider;
 use opentelemetry_sdk::{trace::SdkTracerProvider, Resource};
-use otlp_stdout_span_exporter::{OtlpStdoutSpanExporter, OutputFormat};
+use custom_stdout_exporter::{OtlpStdoutSpanExporter, OutputFormat};
 use serde_json::{json, Value};
 use std::sync::Arc;
 
@@ -20,69 +18,45 @@ struct AppState {
 define_router!(event = ApiGatewayV2httpRequest, state = AppState);
 
 // Define route handlers
-#[route(path = "/")]
-async fn handle_root(_ctx: RouteContext) -> Result<Value, Error> {
-    Ok(json!({
-        "statusCode": 200,
-        "headers": {"Content-Type": "application/json"},
-        "body": json!({
-            "message": "Hello from Lambda!"
-        })
-    }))
-}
 #[route(path = "/hello/{name}")]
 async fn handle_hello(ctx: RouteContext) -> Result<Value, Error> {
     let name = ctx.params.get("name").map(|s| s.as_str()).unwrap();
     Ok(json!({
-        "statusCode": 200,
-        "headers": {"Content-Type": "application/json"},
-        "body": json!({
-            "message": format!("Hello, {}!", name)
-        })
+        "message": format!("Hello, {}!", name)
     }))
 }
 
-// Lambda function entrypoint
+// Lambda function entry point
 #[tokio::main]
 async fn main() -> Result<(), Error> {
     // Initialize tracer with otlp-stdout-span-exporter
-    // Create a new stdout exporter with ClickHouse format
     let exporter = OtlpStdoutSpanExporter::with_format(OutputFormat::ClickHouse);
-
-    // Create a new tracer provider with batch export
-    let tracer_provider = SdkTracerProvider::builder()
-        .with_batch_exporter(exporter)
-        .with_resource(Resource::builder().with_service_name("hello-world").build())
-        .build();
-
-    // Get a tracer from the provider
+    let tracer_provider = Arc::new(
+        SdkTracerProvider::builder()
+            .with_batch_exporter(exporter)
+            .with_resource(Resource::builder().with_service_name("hello-world").build())
+            .build(),
+    );
     let _tracer = tracer_provider.tracer("hello-world");
-
-    // Initialize the OpenTelemetry subscriber
-    OpenTelemetrySubscriberBuilder::new()
-        .with_env_filter(true)
-        .with_service_name("hello-world")
-        .with_json_format(true)
-        .init()?;
 
     let state = Arc::new(AppState {});
     let router = Arc::new(RouterBuilder::from_registry().build());
 
-    // Create a reference to the provider for the OpenTelemetryLayer
-    let provider_ref = Arc::new(tracer_provider);
-
-    // Lambda handler for API Gateway V2 HTTP requests
     let lambda = move |event: LambdaEvent<ApiGatewayV2httpRequest>| {
-        let state = Arc::clone(&state);
-        let router = Arc::clone(&router);
+        let state = state.clone();
+        let router = router.clone();
         async move { router.handle_request(event, state).await }
     };
 
+    // Create a reference to the provider for shutdown
+    let provider_ref = Arc::clone(&tracer_provider);
+
+    // Use OpenTelemetryLayer for creating the initial span
+    // and signal completion by shutting down the provider
     let runtime = Runtime::new(service_fn(lambda)).layer(
         OpenTelemetryLayer::new(move || {
-            // Force flush the provider when the Lambda execution ends
-            let provider = Arc::clone(&provider_ref);
-            let _ = provider.shutdown();
+            // Force flush and shutdown the provider when the Lambda execution ends
+            let _ = provider_ref.shutdown();
         })
         .with_trigger(OpenTelemetryFaasTrigger::Http),
     );

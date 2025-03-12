@@ -16,7 +16,7 @@
 //! ```rust,no_run
 //! use opentelemetry::trace::{Tracer, TracerProvider};
 //! use opentelemetry_sdk::{trace::SdkTracerProvider, Resource};
-//! use otlp_stdout_span_exporter::OtlpStdoutSpanExporter;
+//! use custom_stdout_exporter::OtlpStdoutSpanExporter;
 //!
 //! #[tokio::main]
 //! async fn main() {
@@ -184,7 +184,7 @@ impl Output for TestOutput {
 ///
 /// ```rust,no_run
 /// use opentelemetry_sdk::runtime;
-/// use otlp_stdout_span_exporter::{OtlpStdoutSpanExporter, OutputFormat};
+/// use custom_stdout_exporter::{OtlpStdoutSpanExporter, OutputFormat};
 ///
 /// // Create a new exporter with default OTLP format
 /// let exporter = OtlpStdoutSpanExporter::new();
@@ -214,7 +214,7 @@ impl OtlpStdoutSpanExporter {
     /// # Example
     ///
     /// ```rust
-    /// use otlp_stdout_span_exporter::OtlpStdoutSpanExporter;
+    /// use custom_stdout_exporter::OtlpStdoutSpanExporter;
     ///
     /// let exporter = OtlpStdoutSpanExporter::new();
     /// ```
@@ -231,7 +231,7 @@ impl OtlpStdoutSpanExporter {
     /// # Example
     ///
     /// ```rust
-    /// use otlp_stdout_span_exporter::{OtlpStdoutSpanExporter, OutputFormat};
+    /// use custom_stdout_exporter::{OtlpStdoutSpanExporter, OutputFormat};
     ///
     /// let exporter = OtlpStdoutSpanExporter::with_format(OutputFormat::ClickHouse);
     /// ```
