@@ -12,6 +12,11 @@ lambda_runtime = { version = "0.13.0", features = ["anyhow", "tracing", "opentel
 lambda-lw-http-router = "0.3.0"
 lambda-otel-utils = "0.3.0"
 
+# OpenTelemetry
+opentelemetry = { version = "0.28.0", features = ["trace"] }
+opentelemetry_sdk = { version = "0.28.0", features = ["rt-tokio"] }
+otlp-stdout-span-exporter = { path = "../../../packages/rust/otlp-stdout-span-exporter" }
+
 # Others
 reqwest = { version = "0.12.9", default-features = false, features = ["rustls-tls"] }
 serde_json = "1.0.133"

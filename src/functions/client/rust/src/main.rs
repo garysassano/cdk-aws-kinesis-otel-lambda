@@ -1,11 +1,12 @@
 use aws_lambda_events::apigw::ApiGatewayV2httpRequest;
 use lambda_lw_http_router::{define_router, route};
 use lambda_otel_utils::{
-    HttpTracerProviderBuilder, OpenTelemetryFaasTrigger, OpenTelemetryLayer,
-    OpenTelemetrySubscriberBuilder,
+    OpenTelemetryFaasTrigger, OpenTelemetryLayer, OpenTelemetrySubscriberBuilder,
 };
 use lambda_runtime::{service_fn, Error, LambdaEvent, Runtime};
-use reqwest::Client;
+use opentelemetry::trace::TracerProvider;
+use opentelemetry_sdk::{trace::SdkTracerProvider, Resource};
+use otlp_stdout_span_exporter::{OtlpStdoutSpanExporter, OutputFormat};
 use serde_json::{json, Value};
 use std::sync::Arc;
 
@@ -44,19 +45,21 @@ async fn handle_hello(ctx: RouteContext) -> Result<Value, Error> {
 // Lambda function entrypoint
 #[tokio::main]
 async fn main() -> Result<(), Error> {
-    // Initialize tracer
-    let tracer_provider = HttpTracerProviderBuilder::default()
-        .with_http_client(Client::new())
-        .with_default_text_map_propagator()
-        .with_batch_exporter()
-        .enable_global(true)
-        .build()
-        .expect("Failed to build tracer provider");
+    // Initialize tracer with otlp-stdout-span-exporter
+    let exporter = OtlpStdoutSpanExporter::with_format(OutputFormat::ClickHouse);
+
+    // Create a new tracer provider with batch export
+    let tracer_provider = SdkTracerProvider::builder()
+        .with_batch_exporter(exporter)
+        .with_resource(Resource::builder().with_service_name("hello-world").build())
+        .build();
+
+    // Get a tracer from the provider
+    let _tracer = tracer_provider.tracer("hello-world");
 
     // Initialize the OpenTelemetry subscriber
     OpenTelemetrySubscriberBuilder::new()
         .with_env_filter(true)
-        .with_tracer_provider(tracer_provider.clone())
         .with_service_name("hello-world")
         .with_json_format(true)
         .init()?;
@@ -69,9 +72,15 @@ async fn main() -> Result<(), Error> {
         let router = Arc::clone(&router);
         async move { router.handle_request(event, state).await }
     };
+
+    // Create a reference to the provider for the OpenTelemetryLayer
+    let provider_ref = Arc::new(tracer_provider);
+
     let runtime = Runtime::new(service_fn(lambda)).layer(
-        OpenTelemetryLayer::new(|| {
-            tracer_provider.force_flush();
+        OpenTelemetryLayer::new(move || {
+            // Force flush the provider when the Lambda execution ends
+            let provider = Arc::clone(&provider_ref);
+            let _ = provider.shutdown();
         })
         .with_trigger(OpenTelemetryFaasTrigger::Http),
     );
