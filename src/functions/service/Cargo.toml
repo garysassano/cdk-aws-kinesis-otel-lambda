@@ -21,7 +21,7 @@ lambda_runtime = { version = "0.13.0", features = ["anyhow", "tracing", "opentel
 # Lambda Utils
 lambda-lw-http-router = "0.3.0"
 lambda-otel-utils = "0.3.0"
-custom-stdout-exporter = { path = "../../packages/rust/custom-stdout-exporter" }
+custom-stdout-exporter = { path = "/packages/rust/custom-stdout-exporter" }
 
 # OTel Instrumentation
 opentelemetry = { version = "0.27.1", features = ["trace"] }

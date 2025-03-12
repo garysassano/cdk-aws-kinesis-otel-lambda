@@ -1,0 +1,22 @@
+[package]
+name = "custom-stdout-exporter"
+version = "0.1.0"
+edition = "2021"
+authors = ["AWS Lambda Team"]
+license = "MIT"
+rust-version = "1.70.0"
+description = "A span exporter that writes OpenTelemetry spans to stdout in OTLP format"
+readme = "README.md"
+keywords = ["opentelemetry", "otlp", "tracing", "aws", "lambda"]
+categories = ["development-tools::debugging", "development-tools::profiling"]
+
+[dependencies]
+opentelemetry = { version = "0.28.0", features = ["trace"] }
+opentelemetry_sdk = { version = "0.28.0", features = ["rt-tokio"] }
+opentelemetry-proto = { version = "0.28.0", features = ["gen-tonic", "trace"] }
+tokio = { version = "1", features = ["full"] }
+async-trait = "0.1.82"
+futures-util = "0.3.31"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0.133"
+chrono = "0.4.40"
