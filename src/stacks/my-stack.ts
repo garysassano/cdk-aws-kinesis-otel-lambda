@@ -112,6 +112,7 @@ export class MyStack extends Stack {
         OTEL_EXPORTER_OTLP_ENDPOINT,
         OTEL_EXPORTER_OTLP_PROTOCOL,
         OTEL_EXPORTER_OTLP_COMPRESSION,
+        OTLP_STDOUT_KINESIS_STREAM_NAME: otlpKinesisStream.streamName,
       },
     });
     quotesTable.grantReadWriteData(backendLambda);
@@ -133,6 +134,7 @@ export class MyStack extends Stack {
         OTEL_EXPORTER_OTLP_ENDPOINT,
         OTEL_EXPORTER_OTLP_PROTOCOL,
         OTEL_EXPORTER_OTLP_COMPRESSION,
+        OTLP_STDOUT_KINESIS_STREAM_NAME: otlpKinesisStream.streamName,
       },
     });
     frontendLambda.addFunctionUrl({
