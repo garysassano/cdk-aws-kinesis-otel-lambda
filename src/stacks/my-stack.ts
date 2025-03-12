@@ -1,4 +1,10 @@
-import { CfnOutput, Duration, Stack, StackProps } from "aws-cdk-lib";
+import {
+  CfnOutput,
+  Duration,
+  RemovalPolicy,
+  Stack,
+  StackProps,
+} from "aws-cdk-lib";
 import { Stream, StreamMode } from "aws-cdk-lib/aws-kinesis";
 import {
   Architecture,
@@ -22,6 +28,7 @@ export class MyStack extends Stack {
       streamName: `${id}-otlp-stream`,
       retentionPeriod: Duration.hours(24),
       streamMode: StreamMode.ON_DEMAND,
+      removalPolicy: RemovalPolicy.DESTROY,
     });
 
     //==============================================================================
