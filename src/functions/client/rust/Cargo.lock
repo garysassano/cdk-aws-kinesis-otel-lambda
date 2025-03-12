@@ -381,12 +381,12 @@ name = "client-rust"
 version = "0.1.0"
 dependencies = [
  "aws_lambda_events",
+ "custom-stdout-exporter",
  "lambda-lw-http-router",
  "lambda-otel-utils",
  "lambda_runtime",
  "opentelemetry 0.28.0",
  "opentelemetry_sdk 0.28.0",
- "otlp-stdout-span-exporter",
  "reqwest",
  "serde_json",
  "tokio",
@@ -434,6 +434,21 @@ checksum = "32a2785755761f3ddc1492979ce1e48d2c00d09311c39e4466429188f3dd6501"
 dependencies = [
  "quote",
  "syn",
+]
+
+[[package]]
+name = "custom-stdout-exporter"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "futures-util",
+ "opentelemetry 0.28.0",
+ "opentelemetry-proto 0.28.0",
+ "opentelemetry_sdk 0.28.0",
+ "serde",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]
@@ -1514,21 +1529,6 @@ dependencies = [
  "thiserror 2.0.7",
  "tokio",
  "tracing",
-]
-
-[[package]]
-name = "otlp-stdout-span-exporter"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "chrono",
- "futures-util",
- "opentelemetry 0.28.0",
- "opentelemetry-proto 0.28.0",
- "opentelemetry_sdk 0.28.0",
- "serde",
- "serde_json",
- "tokio",
 ]
 
 [[package]]
