@@ -1,11 +1,11 @@
 use opentelemetry::trace::{Tracer, TracerProvider};
 use opentelemetry_sdk::{trace::SdkTracerProvider, Resource};
-use custom_stdout_exporter::OtlpStdoutSpanExporter;
+use custom_stdout_exporter::CustomStdoutSpanExporter;
 
 #[tokio::main]
 async fn main() {
     // Create a new stdout exporter with OTLP format
-    let exporter = OtlpStdoutSpanExporter::new();
+    let exporter = CustomStdoutSpanExporter::new();
 
     // Create a new tracer provider with batch export
     let provider = SdkTracerProvider::builder()
