@@ -5,7 +5,8 @@ use otlp_stdout_span_exporter::{OtlpStdoutSpanExporter, OutputFormat};
 #[tokio::main]
 async fn main() {
     // Create a new stdout exporter with ClickHouse format
-    let exporter = OtlpStdoutSpanExporter::with_format(OutputFormat::ClickHouse);
+    let exporter = OtlpStdoutSpanExporter::new();
+    // let exporter = OtlpStdoutSpanExporter::with_format(OutputFormat::ClickHouse);
 
     // Create a new tracer provider with batch export
     let provider = SdkTracerProvider::builder()

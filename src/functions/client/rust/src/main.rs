@@ -46,6 +46,7 @@ async fn handle_hello(ctx: RouteContext) -> Result<Value, Error> {
 #[tokio::main]
 async fn main() -> Result<(), Error> {
     // Initialize tracer with otlp-stdout-span-exporter
+    // Create a new stdout exporter with ClickHouse format
     let exporter = OtlpStdoutSpanExporter::with_format(OutputFormat::ClickHouse);
 
     // Create a new tracer provider with batch export
@@ -67,14 +68,15 @@ async fn main() -> Result<(), Error> {
     let state = Arc::new(AppState {});
     let router = Arc::new(RouterBuilder::from_registry().build());
 
+    // Create a reference to the provider for the OpenTelemetryLayer
+    let provider_ref = Arc::new(tracer_provider);
+
+    // Lambda handler for API Gateway V2 HTTP requests
     let lambda = move |event: LambdaEvent<ApiGatewayV2httpRequest>| {
         let state = Arc::clone(&state);
         let router = Arc::clone(&router);
         async move { router.handle_request(event, state).await }
     };
-
-    // Create a reference to the provider for the OpenTelemetryLayer
-    let provider_ref = Arc::new(tracer_provider);
 
     let runtime = Runtime::new(service_fn(lambda)).layer(
         OpenTelemetryLayer::new(move || {
