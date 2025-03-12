@@ -8,16 +8,6 @@ import {
 import { RustFunction } from "cargo-lambda-cdk";
 import { Construct } from "constructs";
 import { join } from "path";
-import { validateEnv } from "../utils/validate-env";
-
-// Constants
-const OTEL_EXPORTER_OTLP_PROTOCOL = "http/protobuf";
-const OTEL_EXPORTER_OTLP_COMPRESSION = "gzip";
-
-// Required environment variables
-const { OTEL_EXPORTER_OTLP_ENDPOINT, OTEL_EXPORTER_OTLP_HEADERS } = validateEnv(
-  ["OTEL_EXPORTER_OTLP_ENDPOINT", "OTEL_EXPORTER_OTLP_HEADERS"],
-);
 
 export class MyStack extends Stack {
   constructor(scope: Construct, id: string, props: StackProps = {}) {
