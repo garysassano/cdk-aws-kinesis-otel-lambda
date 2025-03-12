@@ -70,6 +70,9 @@ export class MyStack extends Stack {
       authType: FunctionUrlAuthType.NONE,
     });
 
+    // Grant permissions to write to Kinesis stream
+    otlpKinesisStream.grantWrite(clientRustLambda);
+
     //==============================================================================
     // DYNAMODB
     //==============================================================================
@@ -116,6 +119,8 @@ export class MyStack extends Stack {
       },
     });
     quotesTable.grantReadWriteData(backendLambda);
+    // Grant permissions to write to Kinesis stream
+    otlpKinesisStream.grantWrite(backendLambda);
 
     // Frontend Lambda
     const frontendLambda = new RustFunction(this, "frontendLambda", {
@@ -140,6 +145,8 @@ export class MyStack extends Stack {
     frontendLambda.addFunctionUrl({
       authType: FunctionUrlAuthType.NONE,
     });
+    // Grant permissions to write to Kinesis stream
+    otlpKinesisStream.grantWrite(frontendLambda);
 
     //==============================================================================
     // API GATEWAY INTEGRATIONS
