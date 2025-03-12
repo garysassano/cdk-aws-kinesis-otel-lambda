@@ -1,8 +1,7 @@
 use aws_lambda_events::event::apigw::ApiGatewayV2httpRequest;
-use lambda_otel_lite::{init_telemetry, OtelTracingLayer, TelemetryConfig};
+use lambda_otel_lite::{init_telemetry, OtelTracingLayer, TelemetryConfig, LambdaSpanProcessor};
 use lambda_runtime::{tower::ServiceBuilder, Error, LambdaEvent, Runtime};
 use opentelemetry::trace::Status;
-use opentelemetry_sdk::trace::SimpleSpanProcessor;
 use custom_stdout_exporter::CustomStdoutSpanExporter;
 use rand::Rng;
 use serde_json::Value;
@@ -96,7 +95,7 @@ async fn handler(event: LambdaEvent<ApiGatewayV2httpRequest>) -> Result<Value, E
 async fn main() -> Result<(), Error> {
     // Initialize telemetry with custom configuration
     let config = TelemetryConfig::builder()
-        .with_span_processor(SimpleSpanProcessor::new(
+        .with_span_processor(LambdaSpanProcessor::new(
             Box::new(CustomStdoutSpanExporter::new())
         ))
         .enable_fmt_layer(true)
