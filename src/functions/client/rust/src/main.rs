@@ -95,9 +95,11 @@ async fn handler(event: LambdaEvent<ApiGatewayV2httpRequest>) -> Result<Value, E
 async fn main() -> Result<(), Error> {
     // Initialize telemetry with custom configuration
     let config = TelemetryConfig::builder()
-        .with_span_processor(LambdaSpanProcessor::builder()
-            .exporter(CustomStdoutSpanExporter::default())
-            .build())
+        .with_span_processor(
+            LambdaSpanProcessor::builder()
+                .exporter(CustomStdoutSpanExporter::default())
+                .build(),
+        )
         .enable_fmt_layer(true)
         .build();
 
