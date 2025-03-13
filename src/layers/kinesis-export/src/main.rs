@@ -51,58 +51,6 @@ impl TelemetryHandler {
         })
     }
 
-    /// Check if a record is a standard Lambda log that should be filtered out
-    fn is_standard_lambda_log(&self, record: &str) -> bool {
-        // If filtering is disabled, always return false
-        if !self.strict_json_array_only {
-            return false;
-        }
-
-        // Try to parse the record as JSON
-        if let Ok(json) = serde_json::from_str::<Value>(record) {
-            // Check for typical structure of Lambda logs
-            if json.get("level").is_some() && json.get("fields").is_some() {
-                // This looks like a standard Lambda log structure
-
-                // Check for spans which are common in Lambda logs
-                if json.get("span").is_some() || json.get("spans").is_some() {
-                    tracing::debug!("Filtering out standard Lambda log with spans");
-                    return true;
-                }
-
-                // Check for message field which often contains Lambda log info
-                if let Some(fields) = json.get("fields") {
-                    if let Some(fields_obj) = fields.as_object() {
-                        // If it has a message field, it's likely a standard log
-                        if fields_obj.contains_key("message") {
-                            tracing::debug!("Filtering out standard Lambda log with message field");
-                            return true;
-                        }
-                    }
-                }
-            }
-
-            // Additional check for Lambda URL request logs
-            if let Some(fields) = json.get("fields") {
-                if let Some(fields_obj) = fields.as_object() {
-                    if let Some(message) = fields_obj.get("message") {
-                        if let Some(message_str) = message.as_str() {
-                            // Check if message contains typical Lambda URL request patterns
-                            if message_str.contains("handling request")
-                                || message_str.contains("httpMethod")
-                                || message_str.contains("requestContext")
-                            {
-                                tracing::debug!("Filtering out Lambda URL request log");
-                                return true;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        false
-    }
-
     async fn send_record(&self, record: String) -> Result<(), Error> {
         tracing::info!("==== RECEIVED NEW RECORD ====");
         tracing::info!("Record length: {} bytes", record.len());
@@ -136,12 +84,6 @@ impl TelemetryHandler {
                 "STRICT MODE DISABLED: This is not recommended and may process unwanted logs"
             );
 
-            // First check if this is a standard Lambda log that should be filtered
-            if self.is_standard_lambda_log(&record) {
-                tracing::info!("Skipping standard Lambda log");
-                return Ok(());
-            }
-
             // Try to parse as JSON array first
             if let Ok(json_array) = serde_json::from_str::<Vec<Value>>(&record) {
                 tracing::info!("==== JSON ARRAY DETECTED ====");
@@ -164,12 +106,6 @@ impl TelemetryHandler {
         for (index, json_obj) in json_array.iter().enumerate() {
             let json_str = json_obj.to_string();
             tracing::info!("Object {}: {} bytes", index, json_str.len());
-
-            // Check if this object is a standard Lambda log
-            if self.is_standard_lambda_log(&json_str) {
-                tracing::info!("Skipping standard Lambda log at index {}", index);
-                continue;
-            }
 
             if index < 2 {
                 tracing::info!(
