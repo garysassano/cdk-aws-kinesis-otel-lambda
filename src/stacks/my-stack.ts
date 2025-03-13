@@ -17,7 +17,7 @@ import {
   FunctionUrlAuthType,
   LoggingFormat,
 } from "aws-cdk-lib/aws-lambda";
-import { RustFunction } from "cargo-lambda-cdk";
+import { RustFunction, RustExtension } from "cargo-lambda-cdk";
 import { Construct } from "constructs";
 import { join } from "path";
 
@@ -43,6 +43,26 @@ export class MyStack extends Stack {
     });
 
     //==============================================================================
+    // RUST EXTENSION LAYER
+    //==============================================================================
+
+    // Create Rust Extension for Kinesis Export
+    const kinesisExportExtension = new RustExtension(
+      this,
+      "KinesisExportExtension",
+      {
+        layerVersionName: "kinesis-export-extension",
+        manifestPath: join(
+          __dirname,
+          "..",
+          "layers/kinesis-export",
+          "Cargo.toml",
+        ),
+        bundling: { cargoLambdaFlags: ["--quiet"] },
+      },
+    );
+
+    //==============================================================================
     // CLIENT RUST LAMBDA
     //==============================================================================
 
@@ -60,6 +80,7 @@ export class MyStack extends Stack {
       memorySize: 1024,
       timeout: Duration.minutes(1),
       loggingFormat: LoggingFormat.JSON,
+      layers: [kinesisExportExtension],
       environment: {
         RUST_LOG: "info",
         OTEL_SERVICE_NAME: "client-rust-lambda",
@@ -108,6 +129,7 @@ export class MyStack extends Stack {
       memorySize: 128,
       timeout: Duration.minutes(1),
       loggingFormat: LoggingFormat.JSON,
+      layers: [kinesisExportExtension],
       environment: {
         RUST_LOG: "info",
         TABLE_NAME: quotesTable.tableName,
@@ -132,6 +154,7 @@ export class MyStack extends Stack {
       memorySize: 128,
       timeout: Duration.minutes(1),
       loggingFormat: LoggingFormat.JSON,
+      layers: [kinesisExportExtension],
       environment: {
         RUST_LOG: "info",
         TARGET_URL: backendApi.url,
