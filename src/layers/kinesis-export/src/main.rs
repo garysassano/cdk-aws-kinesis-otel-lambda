@@ -44,132 +44,112 @@ impl TelemetryHandler {
         })
     }
 
-    /// Check if a single JSON object is a valid span
-    fn is_valid_span_json(&self, json: &Value) -> bool {
-        // Simplified validation - just check for the essential trace fields
-        // Check both uppercase and lowercase versions to be more flexible
-        let has_trace_id = json.get("TraceId").is_some() || json.get("traceId").is_some();
-        let has_span_id = json.get("SpanId").is_some() || json.get("spanId").is_some();
+    /// Process a JSON array and send each object as a separate record to Kinesis
+    async fn process_json_array(&self, record: &str) -> Result<(), Error> {
+        // Try to parse as a JSON array first
+        if let Ok(json_array) = serde_json::from_str::<Vec<Value>>(record) {
+            tracing::info!("Processing JSON array with {} objects", json_array.len());
 
-        // Log the field presence for debugging
-        tracing::debug!(
-            "Field presence: TraceId={}, SpanId={}",
-            has_trace_id,
-            has_span_id
-        );
+            // Convert each object to a newline-delimited JSON (JSONEachRow/NDJSON)
+            for (index, json_obj) in json_array.iter().enumerate() {
+                let json_str = json_obj.to_string();
 
-        // If it has both trace ID and span ID, consider it a valid span
-        if has_trace_id && has_span_id {
-            tracing::debug!("Found valid span with TraceId and SpanId");
-            return true;
-        }
+                // Check size limit
+                if json_str.len() > MAX_RECORD_SIZE_BYTES {
+                    tracing::warn!(
+                        "JSON object at index {} size {} bytes exceeds maximum size of {} bytes, skipping",
+                        index,
+                        json_str.len(),
+                        MAX_RECORD_SIZE_BYTES
+                    );
+                    continue;
+                }
 
-        // Also check for fields in the Lambda platform format
-        let has_time = json.get("time").is_some();
-        let has_type = json.get("type").is_some();
-        let has_record = json.get("record").is_some();
-
-        // If it's a Lambda platform event, check if it contains trace information
-        if has_time && has_type && has_record {
-            tracing::debug!(
-                "Found Lambda platform event: type={}",
-                json.get("type")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("unknown")
-            );
-
-            // Check if the record contains trace information
-            if let Some(record) = json.get("record") {
-                if record.get("traceId").is_some() || record.get("TraceId").is_some() {
-                    tracing::debug!("Found trace information in Lambda platform event record");
-                    return true;
+                // Send to Kinesis
+                match self
+                    .kinesis_client
+                    .put_record()
+                    .stream_name(&self.stream_name)
+                    .data(Blob::new(json_str))
+                    .partition_key(Uuid::new_v4().to_string())
+                    .send()
+                    .await
+                {
+                    Ok(_) => {
+                        tracing::info!(
+                            "Successfully sent JSON object at index {} to Kinesis",
+                            index
+                        );
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            "Failed to send JSON object at index {} to Kinesis: {}",
+                            index,
+                            e
+                        );
+                    }
                 }
             }
+
+            return Ok(());
         }
 
-        false
+        // If not a JSON array, try to process as JSONEachRow (NDJSON)
+        tracing::info!("Input is not a JSON array, trying JSONEachRow format");
+        self.process_json_each_row(record).await
     }
 
-    /// Process and send spans from JSONEachRow format
-    async fn process_json_each_row(&self, record: &str) -> Result<bool, Error> {
+    /// Process and send records from JSONEachRow format (NDJSON)
+    async fn process_json_each_row(&self, record: &str) -> Result<(), Error> {
         let lines: Vec<&str> = record.trim().split('\n').collect();
         if lines.is_empty() {
-            return Ok(false);
+            tracing::warn!("No lines found in the input");
+            return Ok(());
         }
 
-        tracing::debug!("Processing {} lines in JSONEachRow format", lines.len());
-        let mut valid_spans_found = false;
+        tracing::info!("Processing {} lines in JSONEachRow format", lines.len());
 
-        for line in lines {
+        for (index, line) in lines.iter().enumerate() {
             if line.trim().is_empty() {
                 continue;
             }
 
-            tracing::debug!("Processing line: {}", line);
-            if let Ok(json) = serde_json::from_str::<Value>(line) {
-                if self.is_valid_span_json(&json) {
-                    valid_spans_found = true;
-
-                    // Send this individual span to Kinesis
-                    if line.len() > MAX_RECORD_SIZE_BYTES {
-                        tracing::warn!(
-                            "Span size {} bytes exceeds maximum size of {} bytes, skipping",
-                            line.len(),
-                            MAX_RECORD_SIZE_BYTES
-                        );
-                        continue;
-                    }
-
-                    // Extract span details for better logging
-                    let span_id = json
-                        .get("SpanId")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("unknown");
-                    let trace_id = json
-                        .get("TraceId")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("unknown");
-                    let duration = json.get("Duration").and_then(|v| v.as_u64()).unwrap_or(0);
-
-                    tracing::info!(
-                        "Processing span: ID={}, TraceID={}, Duration={} ns",
-                        span_id,
-                        trace_id,
-                        duration
+            // Check if it's valid JSON
+            if let Ok(_json) = serde_json::from_str::<Value>(line) {
+                // Check size limit
+                if line.len() > MAX_RECORD_SIZE_BYTES {
+                    tracing::warn!(
+                        "Line {} size {} bytes exceeds maximum size of {} bytes, skipping",
+                        index,
+                        line.len(),
+                        MAX_RECORD_SIZE_BYTES
                     );
+                    continue;
+                }
 
-                    // Log the Kinesis stream name for debugging
-                    tracing::debug!("Sending to Kinesis stream: {}", self.stream_name);
-
-                    match self
-                        .kinesis_client
-                        .put_record()
-                        .stream_name(&self.stream_name)
-                        .data(Blob::new(line))
-                        .partition_key(Uuid::new_v4().to_string())
-                        .send()
-                        .await
-                    {
-                        Ok(_) => {
-                            tracing::info!("Successfully sent span to Kinesis: ID={}", span_id);
-                        }
-                        Err(e) => {
-                            tracing::error!("Failed to send record to Kinesis: {}", e);
-                            return Err(Error::from(format!(
-                                "Failed to send record to Kinesis: {}",
-                                e
-                            )));
-                        }
+                // Send to Kinesis
+                match self
+                    .kinesis_client
+                    .put_record()
+                    .stream_name(&self.stream_name)
+                    .data(Blob::new(line.to_string()))
+                    .partition_key(Uuid::new_v4().to_string())
+                    .send()
+                    .await
+                {
+                    Ok(_) => {
+                        tracing::info!("Successfully sent line {} to Kinesis", index);
                     }
-                } else {
-                    tracing::debug!("Line is not a valid span");
+                    Err(e) => {
+                        tracing::error!("Failed to send line {} to Kinesis: {}", index, e);
+                    }
                 }
             } else {
-                tracing::debug!("Failed to parse line as JSON: {}", line);
+                tracing::warn!("Line {} is not valid JSON, skipping: {}", index, line);
             }
         }
 
-        Ok(valid_spans_found)
+        Ok(())
     }
 
     async fn send_record(&self, record: String) -> Result<(), Error> {
@@ -186,95 +166,15 @@ impl TelemetryHandler {
             return Ok(());
         }
 
-        // First try to process as JSONEachRow format (multiple JSON objects, one per line)
-        if let Ok(true) = self.process_json_each_row(&record).await {
-            tracing::info!("Successfully processed record as JSONEachRow format");
-            return Ok(());
-        }
-
-        // If not JSONEachRow, try as a single JSON object
-        if let Ok(json) = serde_json::from_str::<Value>(&record) {
-            // Try to extract a span ID for logging
-            let span_id = json
-                .get("SpanId")
-                .or_else(|| json.get("spanId"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown");
-
-            let trace_id = json
-                .get("TraceId")
-                .or_else(|| json.get("traceId"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown");
-
-            tracing::info!(
-                "Processing record with SpanId={}, TraceId={}",
-                span_id,
-                trace_id
-            );
-
-            // Log the Kinesis stream name for debugging
-            tracing::debug!("Sending to Kinesis stream: {}", self.stream_name);
-
-            // Send the record to Kinesis
-            match self
-                .kinesis_client
-                .put_record()
-                .stream_name(&self.stream_name)
-                .data(Blob::new(record))
-                .partition_key(Uuid::new_v4().to_string())
-                .send()
-                .await
-            {
-                Ok(_) => {
-                    tracing::info!("Successfully sent record to Kinesis");
-                    return Ok(());
-                }
-                Err(e) => {
-                    tracing::error!("Failed to send record to Kinesis: {}", e);
-                    return Err(Error::from(format!(
-                        "Failed to send record to Kinesis: {}",
-                        e
-                    )));
-                }
-            }
-        } else {
-            // If it's not valid JSON, log it and try to send it anyway
-            tracing::warn!("Record is not valid JSON, but will try to send it anyway");
-
-            // Log the Kinesis stream name for debugging
-            tracing::debug!("Sending to Kinesis stream: {}", self.stream_name);
-
-            // Send the record to Kinesis
-            match self
-                .kinesis_client
-                .put_record()
-                .stream_name(&self.stream_name)
-                .data(Blob::new(record))
-                .partition_key(Uuid::new_v4().to_string())
-                .send()
-                .await
-            {
-                Ok(_) => {
-                    tracing::info!("Successfully sent non-JSON record to Kinesis");
-                    return Ok(());
-                }
-                Err(e) => {
-                    tracing::error!("Failed to send record to Kinesis: {}", e);
-                    return Err(Error::from(format!(
-                        "Failed to send record to Kinesis: {}",
-                        e
-                    )));
-                }
-            }
-        }
+        // Process the record - first try as JSON array, then as JSONEachRow
+        self.process_json_array(&record).await
     }
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
     tracing::init_default_subscriber();
-    tracing::info!("Starting Rust extension for OpenTelemetry spans");
+    tracing::info!("Starting Rust extension for ClickHouse JSONEachRow format");
 
     let handler = Arc::new(TelemetryHandler::new().await?);
     let handler_clone = handler.clone();
