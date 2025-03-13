@@ -80,9 +80,7 @@ async fn main() -> Result<(), Error> {
             async move {
                 for event in events {
                     if let LambdaTelemetryRecord::Function(record) = event.record {
-                        if record.starts_with(r#"{"__otel_otlp_stdout":"#) {
-                            handler.send_record(record).await?;
-                        }
+                        handler.send_record(record).await?;
                     }
                 }
                 Ok::<(), Error>(())
