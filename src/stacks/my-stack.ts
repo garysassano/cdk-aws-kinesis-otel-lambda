@@ -33,7 +33,7 @@ export class MyStack extends Stack {
 
     // Create Kinesis Stream
     const otlpKinesisStream = new Stream(this, "OtlpKinesisStream", {
-      streamName: `${id}-otlp-stream`,
+      streamName: "otlp-kinesis-stream",
       retentionPeriod: Duration.hours(24),
       streamMode: StreamMode.ON_DEMAND,
       removalPolicy: RemovalPolicy.DESTROY,
