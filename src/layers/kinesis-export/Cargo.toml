@@ -12,3 +12,4 @@ aws-sdk-kinesis.workspace = true
 lambda-extension.workspace = true
 uuid.workspace = true
 serde_json.workspace = true
+jsonschema = "0.17.0"

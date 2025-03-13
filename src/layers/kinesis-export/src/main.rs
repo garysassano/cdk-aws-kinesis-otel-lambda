@@ -1,9 +1,10 @@
 use aws_sdk_kinesis::primitives::Blob;
 use aws_sdk_kinesis::Client as KinesisClient;
+use jsonschema::JSONSchema;
 use lambda_extension::{
     service_fn, tracing, Error, Extension, LambdaTelemetry, LambdaTelemetryRecord, SharedService,
 };
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::env;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -28,6 +29,7 @@ impl ExtensionConfig {
 struct TelemetryHandler {
     kinesis_client: Arc<KinesisClient>,
     stream_name: String,
+    compiled_schema: Arc<JSONSchema>,
 }
 
 impl TelemetryHandler {
@@ -38,56 +40,58 @@ impl TelemetryHandler {
 
         let kinesis_client = Arc::new(KinesisClient::new(&aws_config));
 
+        // Pre-compile the JSON Schema during initialization
+        let schema = Self::build_validation_schema();
+        let compiled_schema = JSONSchema::compile(&schema).expect("Invalid JSON Schema definition");
+
         Ok(Self {
             kinesis_client,
             stream_name: config.kinesis_stream_name,
+            compiled_schema: Arc::new(compiled_schema),
         })
     }
 
-    /// Check if a single JSON object is a valid span
-    fn is_valid_span_json(&self, json: &Value) -> bool {
-        // Simplified validation - just check for the essential trace fields
-        // Check both uppercase and lowercase versions to be more flexible
-        let has_trace_id = json.get("TraceId").is_some() || json.get("traceId").is_some();
-        let has_span_id = json.get("SpanId").is_some() || json.get("spanId").is_some();
-
-        // Log the field presence for debugging
-        tracing::debug!(
-            "Field presence: TraceId={}, SpanId={}",
-            has_trace_id,
-            has_span_id
-        );
-
-        // If it has both trace ID and span ID, consider it a valid span
-        if has_trace_id && has_span_id {
-            tracing::debug!("Found valid span with TraceId and SpanId");
-            return true;
-        }
-
-        // Also check for fields in the Lambda platform format
-        let has_time = json.get("time").is_some();
-        let has_type = json.get("type").is_some();
-        let has_record = json.get("record").is_some();
-
-        // If it's a Lambda platform event, check if it contains trace information
-        if has_time && has_type && has_record {
-            tracing::debug!(
-                "Found Lambda platform event: type={}",
-                json.get("type")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("unknown")
-            );
-
-            // Check if the record contains trace information
-            if let Some(record) = json.get("record") {
-                if record.get("traceId").is_some() || record.get("TraceId").is_some() {
-                    tracing::debug!("Found trace information in Lambda platform event record");
-                    return true;
+    fn build_validation_schema() -> serde_json::Value {
+        json!({
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "oneOf": [
+                {
+                    "type": "object",
+                    "required": ["TraceId", "SpanId"],
+                    "properties": {
+                        "TraceId": {"type": "string", "minLength": 1},
+                        "SpanId": {"type": "string", "minLength": 1},
+                        "ParentSpanId": {"type": "string"},
+                        "SpanName": {"type": "string"},
+                        "Duration": {"type": "number"}
+                    }
+                },
+                {
+                    "type": "object",
+                    "required": ["record"],
+                    "properties": {
+                        "record": {
+                            "type": "object",
+                            "required": ["traceId", "spanId"],
+                            "properties": {
+                                "traceId": {"type": "string", "minLength": 1},
+                                "spanId": {"type": "string", "minLength": 1}
+                            }
+                        }
+                    }
                 }
+            ]
+        })
+    }
+
+    fn is_valid_span_json(&self, json: &Value) -> bool {
+        match self.compiled_schema.validate(json) {
+            Ok(_) => true,
+            Err(errors) => {
+                tracing::debug!("JSON validation failed: {:?}", errors.collect::<Vec<_>>());
+                false
             }
         }
-
-        false
     }
 
     /// Process and send spans from JSONEachRow format
