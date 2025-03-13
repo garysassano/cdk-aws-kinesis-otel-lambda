@@ -37,8 +37,8 @@ impl ExtensionConfig {
 /// Handles the processing of Lambda telemetry records and sending OpenTelemetry spans to Kinesis.
 ///
 /// This struct is responsible for:
-/// - Parsing telemetry records to identify OpenTelemetry spans
-/// - Handling different formats of spans (direct, embedded in logs, NDJSON batches)
+/// - Parsing telemetry records in NDJSON format to identify OpenTelemetry spans
+/// - Processing both single-line (one JSON object) and multi-line (multiple JSON objects) NDJSON
 /// - Sending valid spans to the configured Kinesis stream
 struct TelemetryHandler {
     kinesis_client: Arc<KinesisClient>,
@@ -63,9 +63,9 @@ impl TelemetryHandler {
 
     /// Processes a telemetry record and sends any OpenTelemetry spans to Kinesis.
     ///
-    /// This method handles two main cases:
-    /// 1. Multiple spans in NDJSON/JSONEachRow format (one span per line)
-    /// 2. A single OpenTelemetry span as a JSON object
+    /// This method handles NDJSON (Newline Delimited JSON) format, which can be:
+    /// 1. A single JSON object (single line)
+    /// 2. Multiple JSON objects separated by newlines (multiple lines)
     ///
     /// Only valid OpenTelemetry spans (containing TraceId and SpanId) are sent to Kinesis.
     /// All other records are skipped.
@@ -82,13 +82,12 @@ impl TelemetryHandler {
             return Ok(());
         }
 
-        // First check if this is a NDJSON/JSONEachRow format (multiple JSON objects, one per line)
-        // Lambda telemetry sometimes batches multiple spans in a single record using this format
+        // Check if this is a multi-line NDJSON format (multiple JSON objects, one per line)
         if record.contains("\n") {
             let lines: Vec<&str> = record.trim().split('\n').collect();
             if !lines.is_empty() {
                 tracing::debug!(
-                    "Processing {} lines in NDJSON/JSONEachRow format",
+                    "Processing {} lines in multi-line NDJSON format",
                     lines.len()
                 );
                 let mut spans_sent = 0;
@@ -129,10 +128,9 @@ impl TelemetryHandler {
             }
         }
 
-        // Try to parse as a single JSON object
-        // This handles the case where Lambda telemetry sends a single span per record
+        // Process as a single-line NDJSON (a single JSON object)
         if let Ok(json) = serde_json::from_str::<Value>(&record) {
-            // Check for direct OpenTelemetry span with TraceId and SpanId at root level
+            // Check for OpenTelemetry span with TraceId and SpanId
             if let (Some(trace_id), Some(span_id)) = (
                 json.get("TraceId").and_then(|v| v.as_str()),
                 json.get("SpanId").and_then(|v| v.as_str()),
@@ -184,7 +182,7 @@ impl TelemetryHandler {
 /// and forwards them to an AWS Kinesis stream. It specifically focuses on:
 ///
 /// 1. Identifying and extracting OpenTelemetry spans from Lambda telemetry
-/// 2. Handling both single spans and batched spans in NDJSON/JSONEachRow format
+/// 2. Processing telemetry in NDJSON format (both single-line and multi-line)
 /// 3. Ignoring regular logs and other non-span telemetry data
 ///
 /// The extension subscribes to the Lambda telemetry API and processes each record
