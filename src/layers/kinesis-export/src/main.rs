@@ -44,28 +44,33 @@ impl TelemetryHandler {
         })
     }
 
-    /// Check if the record is in ClickHouse format
-    fn is_clickhouse_format(&self, json: &Value) -> bool {
-        // Check if it's an array
-        if let Some(array) = json.as_array() {
-            if array.is_empty() {
-                return false;
-            }
-            
-            // Check for required fields in the first element
-            if let Some(first_item) = array.get(0) {
+    /// Check if the record is in ClickHouse JSONEachRow format
+    fn is_clickhouse_format(&self, record: &str) -> bool {
+        // Split the record by newlines to handle JSONEachRow format
+        // where each JSON object is on a separate line
+        let lines: Vec<&str> = record.trim().split('\n').collect();
+        
+        // If there are no lines, it's not valid
+        if lines.is_empty() {
+            return false;
+        }
+        
+        // Check if at least one line is a valid ClickHouse span
+        for line in lines {
+            if let Ok(json) = serde_json::from_str::<Value>(line) {
                 // Check for essential ClickHouse format fields
-                let has_trace_id = first_item.get("TraceId").is_some();
-                let has_span_id = first_item.get("SpanId").is_some();
-                let has_span_name = first_item.get("SpanName").is_some();
-                let has_service_name = first_item.get("ServiceName").is_some();
+                let has_trace_id = json.get("TraceId").is_some();
+                let has_span_id = json.get("SpanId").is_some();
+                let has_span_name = json.get("SpanName").is_some();
+                let has_service_name = json.get("ServiceName").is_some();
                 
                 if has_trace_id && has_span_id && has_span_name && has_service_name {
-                    tracing::debug!("Found valid ClickHouse format span data");
+                    tracing::debug!("Found valid ClickHouse JSONEachRow format span data");
                     return true;
                 }
             }
         }
+        
         false
     }
 
@@ -108,10 +113,15 @@ impl TelemetryHandler {
 
     /// Check if the record is a valid OpenTelemetry span in either format
     fn is_valid_otel_span(&self, record: &str) -> bool {
+        // First check if it's in ClickHouse JSONEachRow format
+        if self.is_clickhouse_format(record) {
+            return true;
+        }
+        
+        // If not, try parsing as a single JSON object for OTLP format
         match serde_json::from_str::<Value>(record) {
             Ok(json) => {
-                // Check for either OTLP/JSON or ClickHouse format
-                if self.is_otlp_format(&json) || self.is_clickhouse_format(&json) {
+                if self.is_otlp_format(&json) {
                     return true;
                 }
                 
@@ -126,6 +136,60 @@ impl TelemetryHandler {
     }
 
     async fn send_record(&self, record: String) -> Result<(), Error> {
+        // Check if it's in ClickHouse JSONEachRow format (multiple JSON objects, one per line)
+        let lines: Vec<&str> = record.trim().split('\n').collect();
+        if lines.len() > 1 {
+            // Check if this looks like JSONEachRow format
+            let mut valid_spans_found = false;
+            
+            for line in lines {
+                if line.trim().is_empty() {
+                    continue;
+                }
+                
+                // Check if this line is a valid span
+                if let Ok(json) = serde_json::from_str::<Value>(line) {
+                    let has_trace_id = json.get("TraceId").is_some();
+                    let has_span_id = json.get("SpanId").is_some();
+                    let has_span_name = json.get("SpanName").is_some();
+                    let has_service_name = json.get("ServiceName").is_some();
+                    
+                    if has_trace_id && has_span_id && has_span_name && has_service_name {
+                        valid_spans_found = true;
+                        
+                        // Send this individual span to Kinesis
+                        if line.len() > MAX_RECORD_SIZE_BYTES {
+                            tracing::warn!(
+                                "Span size {} bytes exceeds maximum size of {} bytes, skipping",
+                                line.len(),
+                                MAX_RECORD_SIZE_BYTES
+                            );
+                            continue;
+                        }
+                        
+                        tracing::info!("Processing individual OpenTelemetry span from JSONEachRow format");
+                        
+                        self.kinesis_client
+                            .put_record()
+                            .stream_name(&self.stream_name)
+                            .data(Blob::new(line))
+                            .partition_key(Uuid::new_v4().to_string())
+                            .send()
+                            .await
+                            .map_err(|e| Error::from(format!("Failed to send record to Kinesis: {}", e)))?;
+                            
+                        tracing::info!("Successfully sent OpenTelemetry span to Kinesis");
+                    }
+                }
+            }
+            
+            // If we found and processed valid spans, return success
+            if valid_spans_found {
+                return Ok(());
+            }
+        }
+        
+        // If not JSONEachRow format or no valid spans found, process as a single record
         // Only process valid OpenTelemetry spans
         if !self.is_valid_otel_span(&record) {
             return Ok(());
