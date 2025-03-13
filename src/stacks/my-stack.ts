@@ -14,6 +14,14 @@ import {
 import { RustExtension, RustFunction } from "cargo-lambda-cdk";
 import { Construct } from "constructs";
 import { join } from "path";
+import {
+  Role,
+  PolicyStatement,
+  PolicyDocument,
+  ManagedPolicy,
+  Effect,
+  ArnPrincipal,
+} from "aws-cdk-lib/aws-iam";
 
 export class MyStack extends Stack {
   constructor(scope: Construct, id: string, props: StackProps = {}) {
@@ -29,6 +37,57 @@ export class MyStack extends Stack {
       retentionPeriod: Duration.hours(24),
       streamMode: StreamMode.ON_DEMAND,
       removalPolicy: RemovalPolicy.DESTROY,
+    });
+
+    //==============================================================================
+    // IAM ROLE FOR CLICKHOUSE ACCESS
+    //==============================================================================
+
+    // Create IAM role for ClickHouse access with trust policy
+    const clickHouseAccessRole = new Role(this, "ClickHouseAccessRole", {
+      roleName: `ClickHouseAccessRole-${id}`,
+      assumedBy: new ArnPrincipal(
+        "arn:aws:iam::426924874929:role/CH-S3-bisque-uh-92-uw2-83-Role",
+      ),
+      description: "Role for ClickHouse to access Kinesis streams",
+    });
+
+    // Create and attach the Kinesis access policy
+    const kinesisAccessPolicy = new ManagedPolicy(this, "KinesisAccessPolicy", {
+      managedPolicyName: `KinesisAccessPolicy-${id}`,
+      document: new PolicyDocument({
+        statements: [
+          new PolicyStatement({
+            effect: Effect.ALLOW,
+            actions: [
+              "kinesis:DescribeStream",
+              "kinesis:GetShardIterator",
+              "kinesis:GetRecords",
+              "kinesis:ListShards",
+              "kinesis:SubscribeToShard",
+              "kinesis:DescribeStreamConsumer",
+              "kinesis:RegisterStreamConsumer",
+              "kinesis:DeregisterStreamConsumer",
+              "kinesis:ListStreamConsumers",
+            ],
+            resources: [otlpKinesisStream.streamArn],
+          }),
+          new PolicyStatement({
+            effect: Effect.ALLOW,
+            actions: ["kinesis:ListStreams"],
+            resources: ["*"],
+          }),
+        ],
+      }),
+    });
+
+    // Attach the policy to the role
+    clickHouseAccessRole.addManagedPolicy(kinesisAccessPolicy);
+
+    // Output the role ARN
+    new CfnOutput(this, "ClickHouseAccessRoleArn", {
+      description: "ARN of the ClickHouse access role",
+      value: clickHouseAccessRole.roleArn,
     });
 
     //==============================================================================
