@@ -33,9 +33,7 @@ struct TelemetryHandler {
 impl TelemetryHandler {
     async fn new() -> Result<Self, Error> {
         let config = ExtensionConfig::from_env()?;
-
         let aws_config = aws_config::from_env().load().await;
-
         let kinesis_client = Arc::new(KinesisClient::new(&aws_config));
 
         Ok(Self {
@@ -44,15 +42,62 @@ impl TelemetryHandler {
         })
     }
 
+    async fn send_record(&self, record: String) -> Result<(), Error> {
+        tracing::info!("==== RECEIVED NEW RECORD ====");
+        tracing::info!("Record length: {} bytes", record.len());
+
+        // Try to parse the record as a JSON array
+        let json_array_result = serde_json::from_str::<Vec<Value>>(&record);
+        if let Ok(json_array) = json_array_result {
+            tracing::info!("==== DIRECT JSON ARRAY DETECTED ====");
+            tracing::info!("JSON array has {} elements", json_array.len());
+            tracing::info!(
+                "First few characters: {}",
+                &record[..std::cmp::min(100, record.len())]
+            );
+            return self.process_json_array(&record).await;
+        } else {
+            tracing::info!("==== NOT A JSON ARRAY ====");
+            tracing::info!("Parse error: {:?}", json_array_result.err());
+            tracing::info!(
+                "First few characters: {}",
+                &record[..std::cmp::min(100, record.len())]
+            );
+        }
+
+        // If not a JSON array, try JSONEachRow format
+        tracing::info!("==== TRYING JSONEACHROW FORMAT ====");
+        let lines: Vec<&str> = record.trim().split('\n').collect();
+        tracing::info!("Split into {} lines", lines.len());
+        if lines.len() > 0 {
+            tracing::info!("First line: {}", lines[0]);
+            let json_result = serde_json::from_str::<Value>(lines[0]);
+            tracing::info!("First line is valid JSON: {}", json_result.is_ok());
+        }
+
+        self.process_json_each_row(&record).await
+    }
+
     /// Process a JSON array and send each object as a separate record to Kinesis
     async fn process_json_array(&self, record: &str) -> Result<(), Error> {
-        // Try to parse as a JSON array first
+        tracing::info!("==== PROCESSING AS JSON ARRAY ====");
+
+        // Try to parse as a JSON array
         if let Ok(json_array) = serde_json::from_str::<Vec<Value>>(record) {
             tracing::info!("Processing JSON array with {} objects", json_array.len());
 
-            // Convert each object to a newline-delimited JSON (JSONEachRow/NDJSON)
+            // Send each object in the array to Kinesis
             for (index, json_obj) in json_array.iter().enumerate() {
                 let json_str = json_obj.to_string();
+                tracing::info!("Object {}: {} bytes", index, json_str.len());
+
+                if index < 2 {
+                    tracing::info!(
+                        "Object {} sample: {}",
+                        index,
+                        &json_str[..std::cmp::min(100, json_str.len())]
+                    );
+                }
 
                 // Check size limit
                 if json_str.len() > MAX_RECORD_SIZE_BYTES {
@@ -94,13 +139,15 @@ impl TelemetryHandler {
             return Ok(());
         }
 
-        // If not a JSON array, try to process as JSONEachRow (NDJSON)
+        // If not a JSON array, try JSONEachRow format
         tracing::info!("Input is not a JSON array, trying JSONEachRow format");
         self.process_json_each_row(record).await
     }
 
     /// Process and send records from JSONEachRow format (NDJSON)
     async fn process_json_each_row(&self, record: &str) -> Result<(), Error> {
+        tracing::info!("==== PROCESSING AS JSONEACHROW ====");
+
         let lines: Vec<&str> = record.trim().split('\n').collect();
         if lines.is_empty() {
             tracing::warn!("No lines found in the input");
@@ -111,11 +158,24 @@ impl TelemetryHandler {
 
         for (index, line) in lines.iter().enumerate() {
             if line.trim().is_empty() {
+                tracing::info!("Line {} is empty, skipping", index);
                 continue;
             }
 
+            tracing::info!("Line {}: {} bytes", index, line.len());
+            if index < 2 {
+                tracing::info!(
+                    "Line {} sample: {}",
+                    index,
+                    &line[..std::cmp::min(100, line.len())]
+                );
+            }
+
             // Check if it's valid JSON
-            if let Ok(_json) = serde_json::from_str::<Value>(line) {
+            let json_result = serde_json::from_str::<Value>(line);
+            if let Ok(_json) = json_result {
+                tracing::info!("Line {} is valid JSON", index);
+
                 // Check size limit
                 if line.len() > MAX_RECORD_SIZE_BYTES {
                     tracing::warn!(
@@ -145,29 +205,12 @@ impl TelemetryHandler {
                     }
                 }
             } else {
-                tracing::warn!("Line {} is not valid JSON, skipping: {}", index, line);
+                tracing::warn!("Line {} is NOT valid JSON: {:?}", index, json_result.err());
+                tracing::warn!("Line {} content: {}", index, line);
             }
         }
 
         Ok(())
-    }
-
-    async fn send_record(&self, record: String) -> Result<(), Error> {
-        // Log the raw record for debugging
-        tracing::debug!("Received record: {}", record);
-
-        // Check if the record is too large
-        if record.len() > MAX_RECORD_SIZE_BYTES {
-            tracing::warn!(
-                "Record size {} bytes exceeds maximum size of {} bytes, skipping",
-                record.len(),
-                MAX_RECORD_SIZE_BYTES
-            );
-            return Ok(());
-        }
-
-        // Process the record - first try as JSON array, then as JSONEachRow
-        self.process_json_array(&record).await
     }
 }
 
