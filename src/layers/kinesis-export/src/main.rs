@@ -69,10 +69,12 @@ impl TelemetryHandler {
                     .get("ServiceName")
                     .and_then(|v| v.as_str())
                     .unwrap_or("unknown");
+                let duration = json.get("Duration").and_then(|v| v.as_u64()).unwrap_or(0);
                 tracing::debug!(
-                    "Found valid ClickHouse span: '{}' from service '{}'",
+                    "Found valid ClickHouse span: '{}' from service '{}' with duration {} ns",
                     span_name,
-                    service_name
+                    service_name,
+                    duration
                 );
             } else {
                 tracing::debug!("Found valid ClickHouse span with essential fields");
@@ -120,8 +122,14 @@ impl TelemetryHandler {
                         .get("TraceId")
                         .and_then(|v| v.as_str())
                         .unwrap_or("unknown");
+                    let duration = json.get("Duration").and_then(|v| v.as_u64()).unwrap_or(0);
 
-                    tracing::info!("Processing span: ID={}, TraceID={}", span_id, trace_id);
+                    tracing::info!(
+                        "Processing span: ID={}, TraceID={}, Duration={} ns",
+                        span_id,
+                        trace_id,
+                        duration
+                    );
 
                     self.kinesis_client
                         .put_record()
