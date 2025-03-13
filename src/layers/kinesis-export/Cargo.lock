@@ -1204,6 +1204,7 @@ dependencies = [
  "aws-config",
  "aws-sdk-kinesis",
  "lambda-extension",
+ "serde_json",
  "tokio",
  "tracing",
  "uuid",
