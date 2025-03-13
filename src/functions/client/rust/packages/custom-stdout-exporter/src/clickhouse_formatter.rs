@@ -22,10 +22,33 @@ pub struct ClickhouseSpan {
     pub Duration: u64, // This is in nanoseconds
     pub StatusCode: String,
     pub StatusMessage: String,
-    pub Events: ClickhouseEvents,
-    pub Links: ClickhouseLinks,
+
+    // Flatten the Events fields to match ClickHouse schema
+    #[serde(rename = "Events.Timestamp")]
+    pub events_timestamp: Vec<String>,
+    #[serde(rename = "Events.Name")]
+    pub events_name: Vec<String>,
+    #[serde(rename = "Events.Attributes")]
+    pub events_attributes: Vec<HashMap<String, String>>,
+
+    // Flatten the Links fields to match ClickHouse schema
+    #[serde(rename = "Links.TraceId")]
+    pub links_trace_id: Vec<String>,
+    #[serde(rename = "Links.SpanId")]
+    pub links_span_id: Vec<String>,
+    #[serde(rename = "Links.TraceState")]
+    pub links_trace_state: Vec<String>,
+    #[serde(rename = "Links.Attributes")]
+    pub links_attributes: Vec<HashMap<String, String>>,
 }
 
+/// Represents the nested Events structure in ClickHouse
+/// In ClickHouse, this is defined as:
+/// Events Nested (
+///   Timestamp DateTime64(9),
+///   Name LowCardinality(String),
+///   Attributes Map(LowCardinality(String), String)
+/// )
 #[derive(Debug, Serialize, Deserialize)]
 #[allow(non_snake_case)]
 pub struct ClickhouseEvents {
@@ -34,6 +57,14 @@ pub struct ClickhouseEvents {
     pub Attributes: Vec<HashMap<String, String>>,
 }
 
+/// Represents the nested Links structure in ClickHouse
+/// In ClickHouse, this is defined as:
+/// Links Nested (
+///   TraceId String,
+///   SpanId String,
+///   TraceState String,
+///   Attributes Map(LowCardinality(String), String)
+/// )
 #[derive(Debug, Serialize, Deserialize)]
 #[allow(non_snake_case)]
 pub struct ClickhouseLinks {
@@ -361,7 +392,7 @@ pub fn transform_otlp_to_clickhouse(otlp_json: &str) -> Result<String, serde_jso
                                 }
                             };
 
-                            // Create ClickHouse span
+                            // Create ClickHouse span with flattened Events and Links fields
                             let clickhouse_span = ClickhouseSpan {
                                 Timestamp: timestamp,
                                 TraceId: trace_id,
@@ -378,8 +409,13 @@ pub fn transform_otlp_to_clickhouse(otlp_json: &str) -> Result<String, serde_jso
                                 Duration: duration,
                                 StatusCode: status_code,
                                 StatusMessage: status_message,
-                                Events: events,
-                                Links: links,
+                                events_timestamp: events.Timestamp,
+                                events_name: events.Name,
+                                events_attributes: events.Attributes,
+                                links_trace_id: links.TraceId,
+                                links_span_id: links.SpanId,
+                                links_trace_state: links.TraceState,
+                                links_attributes: links.Attributes,
                             };
 
                             clickhouse_spans.push(clickhouse_span);
