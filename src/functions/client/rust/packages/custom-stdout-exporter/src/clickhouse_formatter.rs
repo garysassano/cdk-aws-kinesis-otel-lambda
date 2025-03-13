@@ -174,6 +174,7 @@ fn convert_links(links: &[Value]) -> ClickhouseLinks {
 }
 
 /// Transforms OTLP JSON to ClickHouse format
+/// Returns newline-delimited JSON (NDJSON) where each span is a separate JSON object
 pub fn transform_otlp_to_clickhouse(otlp_json: &str) -> Result<String, serde_json::Error> {
     let otlp_value: Value = serde_json::from_str(otlp_json)?;
     let mut clickhouse_spans = Vec::new();
@@ -363,6 +364,18 @@ pub fn transform_otlp_to_clickhouse(otlp_json: &str) -> Result<String, serde_jso
         }
     }
 
-    // Serialize to JSON
-    serde_json::to_string(&clickhouse_spans)
+    // Convert each span to a JSON string and join with newlines (NDJSON format)
+    let mut result = String::new();
+    for span in clickhouse_spans {
+        let span_json = serde_json::to_string(&span)?;
+        result.push_str(&span_json);
+        result.push('\n');
+    }
+
+    // Remove the trailing newline if there are any spans
+    if !result.is_empty() {
+        result.pop();
+    }
+
+    Ok(result)
 }
