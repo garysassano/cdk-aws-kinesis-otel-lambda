@@ -117,12 +117,7 @@ export class MyStack extends Stack {
     // Client Rust Lambda
     const clientRustLambda = new RustFunction(this, "ClientRustLambda", {
       functionName: "client-rust-lambda",
-      manifestPath: join(
-        __dirname,
-        "..",
-        "functions/client/rust",
-        "Cargo.toml",
-      ),
+      manifestPath: join(__dirname, "..", "functions/client", "Cargo.toml"),
       bundling: { cargoLambdaFlags: ["--quiet"] },
       architecture: Architecture.ARM_64,
       memorySize: 1024,
