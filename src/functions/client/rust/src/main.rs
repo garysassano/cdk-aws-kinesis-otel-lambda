@@ -1,5 +1,5 @@
 use aws_lambda_events::event::apigw::ApiGatewayV2httpRequest;
-use custom_stdout_exporter::CustomStdoutSpanExporter;
+use custom_stdout_exporter::{CustomStdoutSpanExporter, OutputFormat};
 use lambda_otel_lite::{init_telemetry, LambdaSpanProcessor, OtelTracingLayer, TelemetryConfig};
 use lambda_runtime::{tower::ServiceBuilder, Error, LambdaEvent, Runtime};
 use opentelemetry::trace::Status;
