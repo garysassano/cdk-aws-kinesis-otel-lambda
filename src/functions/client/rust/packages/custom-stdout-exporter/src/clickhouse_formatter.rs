@@ -186,16 +186,15 @@ fn convert_links(links: &[Value]) -> ClickhouseLinks {
 /// Transforms OTLP JSON to ClickHouse format
 /// Returns newline-delimited JSON (NDJSON) where each span is a separate JSON object
 pub fn transform_otlp_to_clickhouse(otlp_json: &str) -> Result<String, serde_json::Error> {
-    eprintln!("Transforming OTLP JSON to ClickHouse format");
     let otlp_value: Value = serde_json::from_str(otlp_json)?;
     let mut clickhouse_spans = Vec::new();
 
     // Process resource spans
     if let Some(resource_spans) = otlp_value.get("resourceSpans").and_then(|v| v.as_array()) {
-        eprintln!("Found {} resource spans", resource_spans.len());
-        for (rs_idx, resource_span) in resource_spans.iter().enumerate() {
+        for resource_span in resource_spans.iter() {
             // Extract resource attributes
-            let resource_attributes = if let Some(resource) = resource_span.get("resource") {
+            let resource = resource_span.get("resource");
+            let resource_attributes = if let Some(resource) = resource {
                 if let Some(attributes) = resource.get("attributes").and_then(|v| v.as_array()) {
                     convert_attributes(attributes)
                 } else {
@@ -211,21 +210,12 @@ pub fn transform_otlp_to_clickhouse(otlp_json: &str) -> Result<String, serde_jso
                 .cloned()
                 .unwrap_or_else(|| "unknown_service".to_string());
 
-            eprintln!(
-                "Processing resource span #{} for service: {}",
-                rs_idx, service_name
-            );
-
             // Process scope spans
             if let Some(scope_spans) = resource_span.get("scopeSpans").and_then(|v| v.as_array()) {
-                eprintln!(
-                    "Found {} scope spans in resource span #{}",
-                    scope_spans.len(),
-                    rs_idx
-                );
-                for (ss_idx, scope_span) in scope_spans.iter().enumerate() {
+                for scope_span in scope_spans.iter() {
                     // Extract scope information
-                    let (scope_name, scope_version) = if let Some(scope) = scope_span.get("scope") {
+                    let scope = scope_span.get("scope");
+                    let (scope_name, scope_version) = if let Some(scope) = scope {
                         (
                             scope
                                 .get("name")
@@ -242,17 +232,9 @@ pub fn transform_otlp_to_clickhouse(otlp_json: &str) -> Result<String, serde_jso
                         ("".to_string(), "".to_string())
                     };
 
-                    eprintln!(
-                        "Processing scope span #{} with name: {}, version: {}",
-                        ss_idx, scope_name, scope_version
-                    );
-
                     // Process spans
                     if let Some(spans) = scope_span.get("spans").and_then(|v| v.as_array()) {
-                        eprintln!("Found {} spans in scope span #{}", spans.len(), ss_idx);
-                        for (span_idx, span) in spans.iter().enumerate() {
-                            eprintln!("Processing span #{}", span_idx);
-
+                        for span in spans.iter() {
                             // Extract basic span information
                             let trace_id = span
                                 .get("traceId")
@@ -289,66 +271,38 @@ pub fn transform_otlp_to_clickhouse(otlp_json: &str) -> Result<String, serde_jso
                                 };
 
                             // Extract timestamps
-                            let start_time_nanos = if let Some(start_time) =
-                                span.get("startTimeUnixNano")
-                            {
+                            let start_time = span.get("startTimeUnixNano");
+                            let start_time_nanos = if let Some(start_time) = start_time {
                                 if let Some(timestamp_str) = start_time.as_str() {
-                                    let parsed = timestamp_str.parse::<u64>().unwrap_or_default();
-                                    eprintln!(
-                                        "Parsed startTimeUnixNano string: {} -> {}",
-                                        timestamp_str, parsed
-                                    );
-                                    parsed
+                                    timestamp_str.parse::<u64>().unwrap_or_default()
                                 } else if let Some(timestamp_num) = start_time.as_u64() {
-                                    eprintln!("Found startTimeUnixNano as u64: {}", timestamp_num);
                                     timestamp_num
                                 } else {
-                                    eprintln!(
-                                        "Could not parse startTimeUnixNano: {:?}",
-                                        start_time
-                                    );
                                     0
                                 }
                             } else {
-                                eprintln!("No startTimeUnixNano found");
                                 0
                             };
 
-                            let end_time_nanos = if let Some(end_time) = span.get("endTimeUnixNano")
-                            {
+                            let end_time = span.get("endTimeUnixNano");
+                            let end_time_nanos = if let Some(end_time) = end_time {
                                 if let Some(timestamp_str) = end_time.as_str() {
-                                    let parsed = timestamp_str.parse::<u64>().unwrap_or_default();
-                                    eprintln!(
-                                        "Parsed endTimeUnixNano string: {} -> {}",
-                                        timestamp_str, parsed
-                                    );
-                                    parsed
+                                    timestamp_str.parse::<u64>().unwrap_or_default()
                                 } else if let Some(timestamp_num) = end_time.as_u64() {
-                                    eprintln!("Found endTimeUnixNano as u64: {}", timestamp_num);
                                     timestamp_num
                                 } else {
-                                    eprintln!("Could not parse endTimeUnixNano: {:?}", end_time);
                                     0
                                 }
                             } else {
-                                eprintln!("No endTimeUnixNano found");
                                 0
                             };
 
-                            // Calculate duration in nanoseconds - matching the Go implementation
-                            // In Go: r.EndTimestamp().AsTime().Sub(r.StartTimestamp().AsTime()).Nanoseconds()
+                            // Calculate duration in nanoseconds
                             let duration = if start_time_nanos > 0 && end_time_nanos > 0 {
-                                // This is equivalent to the Go implementation
                                 end_time_nanos.saturating_sub(start_time_nanos)
                             } else {
-                                eprintln!(
-                                    "Invalid timestamps: start={}, end={}",
-                                    start_time_nanos, end_time_nanos
-                                );
                                 0
                             };
-
-                            eprintln!("Calculated duration: {} ns", duration);
 
                             // Format timestamp
                             let timestamp = format_timestamp(start_time_nanos);
@@ -363,22 +317,22 @@ pub fn transform_otlp_to_clickhouse(otlp_json: &str) -> Result<String, serde_jso
                             };
 
                             // Extract status
-                            let (status_code, status_message) =
-                                if let Some(status) = span.get("status") {
-                                    let code = status
-                                        .get("code")
-                                        .and_then(|v| v.as_i64())
-                                        .unwrap_or_default()
-                                        as i32;
-                                    let message = status
-                                        .get("message")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or_default()
-                                        .to_string();
-                                    (status_code_to_string(code), message)
-                                } else {
-                                    ("Unset".to_string(), "".to_string())
-                                };
+                            let status = span.get("status");
+                            let (status_code, status_message) = if let Some(status) = status {
+                                let code = status
+                                    .get("code")
+                                    .and_then(|v| v.as_i64())
+                                    .unwrap_or_default()
+                                    as i32;
+                                let message = status
+                                    .get("message")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or_default()
+                                    .to_string();
+                                (status_code_to_string(code), message)
+                            } else {
+                                ("Unset".to_string(), "".to_string())
+                            };
 
                             // Extract events
                             let events = if let Some(events_array) =
@@ -408,10 +362,6 @@ pub fn transform_otlp_to_clickhouse(otlp_json: &str) -> Result<String, serde_jso
                             };
 
                             // Create ClickHouse span
-                            // In the Go implementation, the duration is stored directly in nanoseconds
-                            // without conversion to microseconds
-                            eprintln!("Setting Duration in ClickhouseSpan: {} ns", duration);
-
                             let clickhouse_span = ClickhouseSpan {
                                 Timestamp: timestamp,
                                 TraceId: trace_id,
@@ -425,7 +375,7 @@ pub fn transform_otlp_to_clickhouse(otlp_json: &str) -> Result<String, serde_jso
                                 ScopeName: scope_name.clone(),
                                 ScopeVersion: scope_version.clone(),
                                 SpanAttributes: span_attributes,
-                                Duration: duration, // Store in nanoseconds, not microseconds
+                                Duration: duration,
                                 StatusCode: status_code,
                                 StatusMessage: status_message,
                                 Events: events,
@@ -442,9 +392,8 @@ pub fn transform_otlp_to_clickhouse(otlp_json: &str) -> Result<String, serde_jso
 
     // Convert each span to a JSON string and join with newlines (NDJSON format)
     let mut result = String::new();
-    for (i, span) in clickhouse_spans.iter().enumerate() {
+    for span in clickhouse_spans.iter() {
         let span_json = serde_json::to_string(span)?;
-        eprintln!("Span #{} JSON output: {}", i, span_json);
         result.push_str(&span_json);
         result.push('\n');
     }
