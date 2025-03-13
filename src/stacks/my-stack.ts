@@ -58,7 +58,7 @@ export class MyStack extends Stack {
           "layers/kinesis-export",
           "Cargo.toml",
         ),
-        bundling: { cargoLambdaFlags: ["--quiet"] },
+        bundling: { cargoLambdaFlags: ["--quiet", "--arm64"] },
       },
     );
 
