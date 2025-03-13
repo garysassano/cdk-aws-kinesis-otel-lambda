@@ -44,45 +44,78 @@ impl TelemetryHandler {
         })
     }
 
-    /// Check if the record is an OpenTelemetry span with the expected structure
-    fn is_valid_otel_span(&self, record: &str) -> bool {
-        match serde_json::from_str::<Value>(record) {
-            Ok(json) => {
-                // Check if it has the resourceSpans field which is specific to OpenTelemetry
-                if let Some(resource_spans) = json.get("resourceSpans") {
-                    // Validate it's an array with at least one element
-                    if let Some(resource_spans_array) = resource_spans.as_array() {
-                        if resource_spans_array.is_empty() {
-                            tracing::debug!("resourceSpans array is empty");
-                            return false;
-                        }
-                        
-                        // Check for required fields in the first resourceSpan
-                        if let Some(first_resource_span) = resource_spans_array.get(0) {
-                            // Check for resource field
-                            if !first_resource_span.get("resource").is_some() {
-                                tracing::debug!("Missing 'resource' field in resourceSpan");
-                                return false;
-                            }
-                            
-                            // Check for scopeSpans field
-                            if let Some(scope_spans) = first_resource_span.get("scopeSpans") {
-                                if scope_spans.is_array() && !scope_spans.as_array().unwrap().is_empty() {
-                                    // Check for spans field in the first scopeSpan
-                                    if let Some(first_scope_span) = scope_spans.as_array().unwrap().get(0) {
-                                        if let Some(spans) = first_scope_span.get("spans") {
-                                            if spans.is_array() {
-                                                tracing::debug!("Found valid OpenTelemetry span data");
-                                                return true;
-                                            }
-                                        }
+    /// Check if the record is in ClickHouse format
+    fn is_clickhouse_format(&self, json: &Value) -> bool {
+        // Check if it's an array
+        if let Some(array) = json.as_array() {
+            if array.is_empty() {
+                return false;
+            }
+            
+            // Check for required fields in the first element
+            if let Some(first_item) = array.get(0) {
+                // Check for essential ClickHouse format fields
+                let has_trace_id = first_item.get("TraceId").is_some();
+                let has_span_id = first_item.get("SpanId").is_some();
+                let has_span_name = first_item.get("SpanName").is_some();
+                let has_service_name = first_item.get("ServiceName").is_some();
+                
+                if has_trace_id && has_span_id && has_span_name && has_service_name {
+                    tracing::debug!("Found valid ClickHouse format span data");
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Check if the record is in OTLP/JSON format
+    fn is_otlp_format(&self, json: &Value) -> bool {
+        // Check if it has the resourceSpans field which is specific to OpenTelemetry
+        if let Some(resource_spans) = json.get("resourceSpans") {
+            // Validate it's an array with at least one element
+            if let Some(resource_spans_array) = resource_spans.as_array() {
+                if resource_spans_array.is_empty() {
+                    return false;
+                }
+                
+                // Check for required fields in the first resourceSpan
+                if let Some(first_resource_span) = resource_spans_array.get(0) {
+                    // Check for resource field
+                    if !first_resource_span.get("resource").is_some() {
+                        return false;
+                    }
+                    
+                    // Check for scopeSpans field
+                    if let Some(scope_spans) = first_resource_span.get("scopeSpans") {
+                        if scope_spans.is_array() && !scope_spans.as_array().unwrap().is_empty() {
+                            // Check for spans field in the first scopeSpan
+                            if let Some(first_scope_span) = scope_spans.as_array().unwrap().get(0) {
+                                if let Some(spans) = first_scope_span.get("spans") {
+                                    if spans.is_array() {
+                                        tracing::debug!("Found valid OTLP/JSON format span data");
+                                        return true;
                                     }
                                 }
                             }
                         }
                     }
                 }
-                tracing::debug!("JSON doesn't contain valid OpenTelemetry span structure");
+            }
+        }
+        false
+    }
+
+    /// Check if the record is a valid OpenTelemetry span in either format
+    fn is_valid_otel_span(&self, record: &str) -> bool {
+        match serde_json::from_str::<Value>(record) {
+            Ok(json) => {
+                // Check for either OTLP/JSON or ClickHouse format
+                if self.is_otlp_format(&json) || self.is_clickhouse_format(&json) {
+                    return true;
+                }
+                
+                tracing::debug!("JSON doesn't match any known OpenTelemetry span format");
                 false
             }
             Err(e) => {
