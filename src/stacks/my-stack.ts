@@ -5,26 +5,15 @@ import {
   Stack,
   StackProps,
 } from "aws-cdk-lib";
-import {
-  EndpointType,
-  LambdaIntegration,
-  RestApi,
-} from "aws-cdk-lib/aws-apigateway";
-import { AttributeType, TableV2 } from "aws-cdk-lib/aws-dynamodb";
 import { Stream, StreamMode } from "aws-cdk-lib/aws-kinesis";
 import {
   Architecture,
   FunctionUrlAuthType,
   LoggingFormat,
 } from "aws-cdk-lib/aws-lambda";
-import { RustFunction, RustExtension } from "cargo-lambda-cdk";
+import { RustExtension, RustFunction } from "cargo-lambda-cdk";
 import { Construct } from "constructs";
 import { join } from "path";
-
-// Constants
-const OTEL_EXPORTER_OTLP_PROTOCOL = "http/protobuf";
-const OTEL_EXPORTER_OTLP_COMPRESSION = "gzip";
-const OTEL_EXPORTER_OTLP_ENDPOINT = "https://api.honeycomb.io:443";
 
 export class MyStack extends Stack {
   constructor(scope: Construct, id: string, props: StackProps = {}) {
