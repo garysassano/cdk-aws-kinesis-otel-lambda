@@ -26,10 +26,20 @@ impl ExtensionConfig {
     }
 }
 
+#[derive(Debug, PartialEq)]
+enum SchemaType {
+    Direct,  // First schema with direct TraceId, SpanId
+    Nested,  // Second schema with nested record
+    Unknown, // For cases where validation passes but we can't determine which schema
+}
+
 struct TelemetryHandler {
     kinesis_client: Arc<KinesisClient>,
     stream_name: String,
     compiled_schema: Arc<JSONSchema>,
+    // Add individual schemas for testing
+    direct_schema: Arc<JSONSchema>,
+    nested_schema: Arc<JSONSchema>,
 }
 
 impl TelemetryHandler {
@@ -40,56 +50,108 @@ impl TelemetryHandler {
 
         let kinesis_client = Arc::new(KinesisClient::new(&aws_config));
 
-        // Pre-compile the JSON Schema during initialization
-        let schema = Self::build_validation_schema();
-        let compiled_schema = JSONSchema::compile(&schema).expect("Invalid JSON Schema definition");
+        // Get the schema components
+        let (direct_schema_value, nested_schema_value) = Self::get_schema_components();
+
+        // Compile the individual schemas
+        let direct_schema =
+            JSONSchema::compile(&direct_schema_value).expect("Invalid direct schema definition");
+
+        let nested_schema =
+            JSONSchema::compile(&nested_schema_value).expect("Invalid nested schema definition");
+
+        // Create the combined schema with oneOf
+        let combined_schema = json!({
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "oneOf": [direct_schema_value, nested_schema_value]
+        });
+
+        let compiled_schema =
+            JSONSchema::compile(&combined_schema).expect("Invalid JSON Schema definition");
 
         Ok(Self {
             kinesis_client,
             stream_name: config.kinesis_stream_name,
             compiled_schema: Arc::new(compiled_schema),
+            direct_schema: Arc::new(direct_schema),
+            nested_schema: Arc::new(nested_schema),
         })
     }
 
-    fn build_validation_schema() -> serde_json::Value {
-        json!({
-            "$schema": "https://json-schema.org/draft/2020-12/schema",
-            "oneOf": [
-                {
+    // Return the two schema components as a tuple
+    fn get_schema_components() -> (serde_json::Value, serde_json::Value) {
+        // Common properties that should be validated in both formats
+        let direct_schema = json!({
+            "type": "object",
+            "required": ["TraceId", "SpanId"],
+            "properties": {
+                "TraceId": {"type": "string", "minLength": 1},
+                "SpanId": {"type": "string", "minLength": 1},
+                "ParentSpanId": {"type": "string"},
+                "SpanName": {"type": "string"},
+                "Duration": {"type": "number"},
+                // Additional properties that might be present in this format
+                "Timestamp": {"type": "string"},
+                "TraceState": {"type": "string"},
+                "SpanKind": {"type": "string"},
+                "ServiceName": {"type": "string"},
+                "ResourceAttributes": {"type": "object"},
+                "ScopeName": {"type": "string"},
+                "SpanAttributes": {"type": "object"},
+                "StatusCode": {"type": "string"},
+                "StatusMessage": {"type": "string"}
+            }
+        });
+
+        let nested_schema = json!({
+            "type": "object",
+            "required": ["record"],
+            "properties": {
+                "record": {
                     "type": "object",
-                    "required": ["TraceId", "SpanId"],
+                    "required": ["traceId", "spanId"],
                     "properties": {
-                        "TraceId": {"type": "string", "minLength": 1},
-                        "SpanId": {"type": "string", "minLength": 1},
-                        "ParentSpanId": {"type": "string"},
-                        "SpanName": {"type": "string"},
-                        "Duration": {"type": "number"}
+                        "traceId": {"type": "string", "minLength": 1},
+                        "spanId": {"type": "string", "minLength": 1},
+                        "parentSpanId": {"type": "string"},
+                        "name": {"type": "string"},
+                        "duration": {"type": "number"},
+                        // Additional properties that might be present in this format
+                        "timestamp": {"type": "string"},
+                        "traceState": {"type": "string"},
+                        "kind": {"type": "string"},
+                        "serviceName": {"type": "string"},
+                        "attributes": {"type": "object"},
+                        "status": {"type": "object"}
                     }
                 },
-                {
-                    "type": "object",
-                    "required": ["record"],
-                    "properties": {
-                        "record": {
-                            "type": "object",
-                            "required": ["traceId", "spanId"],
-                            "properties": {
-                                "traceId": {"type": "string", "minLength": 1},
-                                "spanId": {"type": "string", "minLength": 1}
-                            }
-                        }
-                    }
-                }
-            ]
-        })
+                // The nested format might have additional metadata at the top level
+                "timestamp": {"type": "string"},
+                "source": {"type": "string"}
+            }
+        });
+
+        (direct_schema, nested_schema)
     }
 
-    fn is_valid_span_json(&self, json: &Value) -> bool {
+    fn is_valid_span_json(&self, json: &Value) -> (bool, SchemaType) {
         match self.compiled_schema.validate(json) {
-            Ok(_) => true,
+            Ok(_) => {
+                // Determine which schema matched
+                if self.direct_schema.is_valid(json) {
+                    tracing::debug!("JSON validated with Direct schema");
+                    (true, SchemaType::Direct)
+                } else if self.nested_schema.is_valid(json) {
+                    tracing::debug!("JSON validated with Nested schema");
+                    (true, SchemaType::Nested)
+                } else {
+                    tracing::debug!("JSON validated but schema type unknown");
+                    (true, SchemaType::Unknown)
+                }
+            }
             Err(errors) => {
                 tracing::debug!("JSON validation failed: {:?}", errors.collect::<Vec<_>>());
-                false
+                (false, SchemaType::Unknown)
             }
         }
     }
@@ -111,8 +173,10 @@ impl TelemetryHandler {
 
             tracing::debug!("Processing line: {}", line);
             if let Ok(json) = serde_json::from_str::<Value>(line) {
-                if self.is_valid_span_json(&json) {
+                let (is_valid, schema_type) = self.is_valid_span_json(&json);
+                if is_valid {
                     valid_spans_found = true;
+                    tracing::info!("Valid span found with schema type: {:?}", schema_type);
 
                     // Send this individual span to Kinesis
                     if line.len() > MAX_RECORD_SIZE_BYTES {
@@ -125,21 +189,70 @@ impl TelemetryHandler {
                     }
 
                     // Extract span details for better logging
-                    let span_id = json
-                        .get("SpanId")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("unknown");
-                    let trace_id = json
-                        .get("TraceId")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("unknown");
-                    let duration = json.get("Duration").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let (span_id, trace_id) = match schema_type {
+                        SchemaType::Direct => {
+                            let span_id = json
+                                .get("SpanId")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("unknown");
+                            let trace_id = json
+                                .get("TraceId")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("unknown");
+                            (span_id, trace_id)
+                        }
+                        SchemaType::Nested => {
+                            if let Some(record) = json.get("record") {
+                                let span_id = record
+                                    .get("spanId")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("unknown");
+                                let trace_id = record
+                                    .get("traceId")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("unknown");
+                                (span_id, trace_id)
+                            } else {
+                                ("unknown", "unknown")
+                            }
+                        }
+                        SchemaType::Unknown => {
+                            // Try both formats
+                            let span_id = json
+                                .get("SpanId")
+                                .and_then(|v| v.as_str())
+                                .or_else(|| {
+                                    json.get("record")
+                                        .and_then(|r| r.get("spanId"))
+                                        .and_then(|v| v.as_str())
+                                })
+                                .unwrap_or("unknown");
+                            let trace_id = json
+                                .get("TraceId")
+                                .and_then(|v| v.as_str())
+                                .or_else(|| {
+                                    json.get("record")
+                                        .and_then(|r| r.get("traceId"))
+                                        .and_then(|v| v.as_str())
+                                })
+                                .unwrap_or("unknown");
+                            (span_id, trace_id)
+                        }
+                    };
+
+                    let duration = match schema_type {
+                        SchemaType::Direct => {
+                            json.get("Duration").and_then(|v| v.as_u64()).unwrap_or(0)
+                        }
+                        _ => 0, // Duration might not be available in other formats
+                    };
 
                     tracing::info!(
-                        "Processing span: ID={}, TraceID={}, Duration={} ns",
+                        "Processing span: ID={}, TraceID={}, Duration={} ns, Schema={:?}",
                         span_id,
                         trace_id,
-                        duration
+                        duration,
+                        schema_type
                     );
 
                     // Log the Kinesis stream name for debugging
