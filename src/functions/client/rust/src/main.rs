@@ -97,7 +97,7 @@ async fn main() -> Result<(), Error> {
     let config = TelemetryConfig::builder()
         .with_span_processor(
             LambdaSpanProcessor::builder()
-                .exporter(CustomStdoutSpanExporter::default())
+                .exporter(CustomStdoutSpanExporter::with_format(OutputFormat::ClickHouse))
                 .build(),
         )
         .enable_fmt_layer(true)
