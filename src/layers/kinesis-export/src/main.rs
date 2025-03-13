@@ -11,12 +11,21 @@ use uuid::Uuid;
 // Kinesis limit for a single record
 const MAX_RECORD_SIZE_BYTES: usize = 1_048_576; // 1MB per record
 
+/// Configuration for the Lambda extension.
+///
+/// Contains settings required for the extension to operate,
+/// such as the name of the Kinesis stream to send spans to.
 #[derive(Debug)]
 struct ExtensionConfig {
+    /// The name of the Kinesis stream to send OpenTelemetry spans to.
     kinesis_stream_name: String,
 }
 
 impl ExtensionConfig {
+    /// Creates a new ExtensionConfig from environment variables.
+    ///
+    /// Reads the OTLP_STDOUT_KINESIS_STREAM_NAME environment variable
+    /// to determine which Kinesis stream to send spans to.
     fn from_env() -> Result<Self, Error> {
         Ok(Self {
             kinesis_stream_name: env::var("OTLP_STDOUT_KINESIS_STREAM_NAME")
@@ -25,12 +34,22 @@ impl ExtensionConfig {
     }
 }
 
+/// Handles the processing of Lambda telemetry records and sending OpenTelemetry spans to Kinesis.
+///
+/// This struct is responsible for:
+/// - Parsing telemetry records to identify OpenTelemetry spans
+/// - Handling different formats of spans (direct, embedded in logs, NDJSON batches)
+/// - Sending valid spans to the configured Kinesis stream
 struct TelemetryHandler {
     kinesis_client: Arc<KinesisClient>,
     stream_name: String,
 }
 
 impl TelemetryHandler {
+    /// Creates a new TelemetryHandler with the configured Kinesis stream.
+    ///
+    /// Reads the stream name from the OTLP_STDOUT_KINESIS_STREAM_NAME environment variable
+    /// and initializes the AWS Kinesis client.
     async fn new() -> Result<Self, Error> {
         let config = ExtensionConfig::from_env()?;
         let aws_config = aws_config::from_env().load().await;
@@ -42,6 +61,14 @@ impl TelemetryHandler {
         })
     }
 
+    /// Processes a telemetry record and sends any OpenTelemetry spans to Kinesis.
+    ///
+    /// This method handles two main cases:
+    /// 1. Multiple spans in NDJSON/JSONEachRow format (one span per line)
+    /// 2. A single OpenTelemetry span as a JSON object
+    ///
+    /// Only valid OpenTelemetry spans (containing TraceId and SpanId) are sent to Kinesis.
+    /// All other records are skipped.
     async fn send_record(&self, record: String) -> Result<(), Error> {
         // Add detailed debug logging to understand the record structure
         tracing::debug!(
@@ -55,11 +82,15 @@ impl TelemetryHandler {
             return Ok(());
         }
 
-        // First try to process as JSONEachRow format (multiple JSON objects, one per line)
+        // First check if this is a NDJSON/JSONEachRow format (multiple JSON objects, one per line)
+        // Lambda telemetry sometimes batches multiple spans in a single record using this format
         if record.contains("\n") {
             let lines: Vec<&str> = record.trim().split('\n').collect();
             if !lines.is_empty() {
-                tracing::debug!("Processing {} lines in JSONEachRow format", lines.len());
+                tracing::debug!(
+                    "Processing {} lines in NDJSON/JSONEachRow format",
+                    lines.len()
+                );
                 let mut spans_sent = 0;
 
                 for line in lines {
@@ -99,8 +130,9 @@ impl TelemetryHandler {
         }
 
         // Try to parse as a single JSON object
+        // This handles the case where Lambda telemetry sends a single span per record
         if let Ok(json) = serde_json::from_str::<Value>(&record) {
-            // CASE 1: Direct OpenTelemetry span with TraceId and SpanId at root level
+            // Check for direct OpenTelemetry span with TraceId and SpanId at root level
             if let (Some(trace_id), Some(span_id)) = (
                 json.get("TraceId").and_then(|v| v.as_str()),
                 json.get("SpanId").and_then(|v| v.as_str()),
@@ -112,27 +144,6 @@ impl TelemetryHandler {
                 );
                 return self.send_to_kinesis(record).await;
             }
-
-            // CASE 2: Structured log with embedded span in message field
-            if json.get("fields").is_some() {
-                if let Some(message) = json
-                    .get("fields")
-                    .and_then(|f| f.get("message"))
-                    .and_then(|m| m.as_str())
-                {
-                    if message.contains("\"TraceId\":") && message.contains("\"SpanId\":") {
-                        if let Ok(message_json) = serde_json::from_str::<Value>(message) {
-                            if let (Some(trace_id), Some(span_id)) = (
-                                message_json.get("TraceId").and_then(|v| v.as_str()),
-                                message_json.get("SpanId").and_then(|v| v.as_str()),
-                            ) {
-                                tracing::info!("Extracted OpenTelemetry span from message: TraceId={}, SpanId={}", trace_id, span_id);
-                                return self.send_to_kinesis(message.to_string()).await;
-                            }
-                        }
-                    }
-                }
-            }
         }
 
         // If we get here, the record is not an OpenTelemetry span - skip it
@@ -140,7 +151,10 @@ impl TelemetryHandler {
         Ok(())
     }
 
-    // Helper method to send data to Kinesis
+    /// Sends data to the configured Kinesis stream.
+    ///
+    /// This helper method handles the actual sending of data to Kinesis,
+    /// using a random UUID as the partition key.
     async fn send_to_kinesis(&self, data: String) -> Result<(), Error> {
         match self
             .kinesis_client
@@ -166,6 +180,16 @@ impl TelemetryHandler {
     }
 }
 
+/// This Lambda extension captures OpenTelemetry spans from Lambda function telemetry
+/// and forwards them to an AWS Kinesis stream. It specifically focuses on:
+///
+/// 1. Identifying and extracting OpenTelemetry spans from Lambda telemetry
+/// 2. Handling both single spans and batched spans in NDJSON/JSONEachRow format
+/// 3. Ignoring regular logs and other non-span telemetry data
+///
+/// The extension subscribes to the Lambda telemetry API and processes each record
+/// to determine if it contains OpenTelemetry span data. If it does, the span is
+/// forwarded to the configured Kinesis stream for further processing.
 #[tokio::main]
 async fn main() -> Result<(), Error> {
     // Set up logging with info level for our code, but warn for AWS libraries
