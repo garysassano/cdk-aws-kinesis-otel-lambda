@@ -1,0 +1,74 @@
+[
+  {
+    "Timestamp": "2025-03-13 01:47:57.009116889",
+    "TraceId": "c2dbf9eed2613296334e7d1b5cc19f58",
+    "SpanId": "8aa95b56bfb83f6f",
+    "ParentSpanId": "ca84c6eb59ed1701",
+    "TraceState": "",
+    "SpanName": "child1",
+    "SpanKind": "Internal",
+    "ServiceName": "hello-world",
+    "ResourceAttributes": {
+      "telemetry.sdk.language": "rust",
+      "telemetry.sdk.name": "opentelemetry",
+      "telemetry.sdk.version": "0.28.0",
+      "service.name": "hello-world"
+    },
+    "ScopeName": "hello-world",
+    "ScopeVersion": "",
+    "SpanAttributes": {},
+    "Duration": 0,
+    "StatusCode": "Unset",
+    "StatusMessage": "",
+    "Events": { "Timestamp": [], "Name": [], "Attributes": [] },
+    "Links": { "TraceId": [], "SpanId": [], "TraceState": [], "Attributes": [] }
+  },
+  {
+    "Timestamp": "2025-03-13 01:47:57.009120673",
+    "TraceId": "c2dbf9eed2613296334e7d1b5cc19f58",
+    "SpanId": "32fe7b13f0a55d32",
+    "ParentSpanId": "ca84c6eb59ed1701",
+    "TraceState": "",
+    "SpanName": "child2",
+    "SpanKind": "Internal",
+    "ServiceName": "hello-world",
+    "ResourceAttributes": {
+      "telemetry.sdk.language": "rust",
+      "telemetry.sdk.name": "opentelemetry",
+      "telemetry.sdk.version": "0.28.0",
+      "service.name": "hello-world"
+    },
+    "ScopeName": "hello-world",
+    "ScopeVersion": "",
+    "SpanAttributes": {},
+    "Duration": 0,
+    "StatusCode": "Unset",
+    "StatusMessage": "",
+    "Events": { "Timestamp": [], "Name": [], "Attributes": [] },
+    "Links": { "TraceId": [], "SpanId": [], "TraceState": [], "Attributes": [] }
+  },
+  {
+    "Timestamp": "2025-03-13 01:47:57.009112566",
+    "TraceId": "c2dbf9eed2613296334e7d1b5cc19f58",
+    "SpanId": "ca84c6eb59ed1701",
+    "ParentSpanId": "",
+    "TraceState": "",
+    "SpanName": "parent-operation",
+    "SpanKind": "Internal",
+    "ServiceName": "hello-world",
+    "ResourceAttributes": {
+      "telemetry.sdk.language": "rust",
+      "telemetry.sdk.name": "opentelemetry",
+      "telemetry.sdk.version": "0.28.0",
+      "service.name": "hello-world"
+    },
+    "ScopeName": "hello-world",
+    "ScopeVersion": "",
+    "SpanAttributes": {},
+    "Duration": 0,
+    "StatusCode": "Unset",
+    "StatusMessage": "",
+    "Events": { "Timestamp": [], "Name": [], "Attributes": [] },
+    "Links": { "TraceId": [], "SpanId": [], "TraceState": [], "Attributes": [] }
+  }
+]
