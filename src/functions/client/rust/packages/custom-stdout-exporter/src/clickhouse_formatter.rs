@@ -426,18 +426,8 @@ pub fn transform_otlp_to_clickhouse(otlp_json: &str) -> Result<String, serde_jso
         }
     }
 
-    // Convert each span to a JSON string and join with newlines (NDJSON format)
-    let mut result = String::new();
-    for span in clickhouse_spans.iter() {
-        let span_json = serde_json::to_string(span)?;
-        result.push_str(&span_json);
-        result.push('\n');
-    }
-
-    // Remove the trailing newline if there are any spans
-    if !result.is_empty() {
-        result.pop();
-    }
+    // Serialize the entire vector of spans as a JSON array
+    let result = serde_json::to_string(&clickhouse_spans)?;
 
     Ok(result)
 }
