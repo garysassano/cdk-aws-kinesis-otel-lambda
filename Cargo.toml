@@ -22,6 +22,7 @@ custom-stdout-exporter = { path = "src/packages/custom-stdout-exporter" }
 tokio = { version = "1", features = ["full"] }
 async-trait = "0.1.82"
 futures = "0.3.31"
+futures-util = "0.3.31"
 
 # OpenTelemetry and tracing
 lambda-otel-lite = "0.10.1"
@@ -52,6 +53,7 @@ serde_json = "1.0.133"
 thiserror = "2.0.4"
 anyhow = "1.0.94"
 rand = "0.9.0"
+chrono = "0.4.40"
 
 [profile.release]
 opt-level = "z"
