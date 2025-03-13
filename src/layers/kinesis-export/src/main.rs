@@ -1,10 +1,9 @@
 use aws_sdk_kinesis::primitives::Blob;
 use aws_sdk_kinesis::Client as KinesisClient;
-use jsonschema::JSONSchema;
 use lambda_extension::{
     service_fn, tracing, Error, Extension, LambdaTelemetry, LambdaTelemetryRecord, SharedService,
 };
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::env;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -26,363 +25,142 @@ impl ExtensionConfig {
     }
 }
 
-#[derive(Debug, PartialEq)]
-enum SchemaType {
-    Direct,  // First schema with direct TraceId, SpanId
-    Nested,  // Second schema with nested record
-    Unknown, // For cases where validation passes but we can't determine which schema
-}
-
 struct TelemetryHandler {
     kinesis_client: Arc<KinesisClient>,
     stream_name: String,
-    compiled_schema: Arc<JSONSchema>,
-    // Add individual schemas for testing
-    direct_schema: Arc<JSONSchema>,
-    nested_schema: Arc<JSONSchema>,
 }
 
 impl TelemetryHandler {
     async fn new() -> Result<Self, Error> {
         let config = ExtensionConfig::from_env()?;
-
         let aws_config = aws_config::from_env().load().await;
-
         let kinesis_client = Arc::new(KinesisClient::new(&aws_config));
-
-        // Get the schema components
-        let (direct_schema_value, nested_schema_value) = Self::get_schema_components();
-
-        // Compile the individual schemas
-        let direct_schema =
-            JSONSchema::compile(&direct_schema_value).expect("Invalid direct schema definition");
-
-        let nested_schema =
-            JSONSchema::compile(&nested_schema_value).expect("Invalid nested schema definition");
-
-        // Create the combined schema with oneOf
-        let combined_schema = json!({
-            "$schema": "https://json-schema.org/draft/2020-12/schema",
-            "oneOf": [direct_schema_value, nested_schema_value]
-        });
-
-        let compiled_schema =
-            JSONSchema::compile(&combined_schema).expect("Invalid JSON Schema definition");
 
         Ok(Self {
             kinesis_client,
             stream_name: config.kinesis_stream_name,
-            compiled_schema: Arc::new(compiled_schema),
-            direct_schema: Arc::new(direct_schema),
-            nested_schema: Arc::new(nested_schema),
         })
     }
 
-    // Return the two schema components as a tuple
-    fn get_schema_components() -> (serde_json::Value, serde_json::Value) {
-        // Common properties that should be validated in both formats
-        let direct_schema = json!({
-            "type": "object",
-            "required": ["TraceId", "SpanId"],
-            "properties": {
-                "TraceId": {"type": "string", "minLength": 1},
-                "SpanId": {"type": "string", "minLength": 1},
-                "ParentSpanId": {"type": "string"},
-                "SpanName": {"type": "string"},
-                "Duration": {"type": "number"},
-                // Additional properties that might be present in this format
-                "Timestamp": {"type": "string"},
-                "TraceState": {"type": "string"},
-                "SpanKind": {"type": "string"},
-                "ServiceName": {"type": "string"},
-                "ResourceAttributes": {"type": "object"},
-                "ScopeName": {"type": "string"},
-                "SpanAttributes": {"type": "object"},
-                "StatusCode": {"type": "string"},
-                "StatusMessage": {"type": "string"}
-            }
-        });
-
-        let nested_schema = json!({
-            "type": "object",
-            "required": ["record"],
-            "properties": {
-                "record": {
-                    "type": "object",
-                    "required": ["traceId", "spanId"],
-                    "properties": {
-                        "traceId": {"type": "string", "minLength": 1},
-                        "spanId": {"type": "string", "minLength": 1},
-                        "parentSpanId": {"type": "string"},
-                        "name": {"type": "string"},
-                        "duration": {"type": "number"},
-                        // Additional properties that might be present in this format
-                        "timestamp": {"type": "string"},
-                        "traceState": {"type": "string"},
-                        "kind": {"type": "string"},
-                        "serviceName": {"type": "string"},
-                        "attributes": {"type": "object"},
-                        "status": {"type": "object"}
-                    }
-                },
-                // The nested format might have additional metadata at the top level
-                "timestamp": {"type": "string"},
-                "source": {"type": "string"}
-            }
-        });
-
-        (direct_schema, nested_schema)
-    }
-
-    fn is_valid_span_json(&self, json: &Value) -> (bool, SchemaType) {
-        match self.compiled_schema.validate(json) {
-            Ok(_) => {
-                // Determine which schema matched
-                if self.direct_schema.is_valid(json) {
-                    tracing::debug!("JSON validated with Direct schema");
-                    (true, SchemaType::Direct)
-                } else if self.nested_schema.is_valid(json) {
-                    tracing::debug!("JSON validated with Nested schema");
-                    (true, SchemaType::Nested)
-                } else {
-                    tracing::debug!("JSON validated but schema type unknown");
-                    (true, SchemaType::Unknown)
-                }
-            }
-            Err(errors) => {
-                tracing::debug!("JSON validation failed: {:?}", errors.collect::<Vec<_>>());
-                (false, SchemaType::Unknown)
-            }
-        }
-    }
-
-    /// Process and send spans from JSONEachRow format
-    async fn process_json_each_row(&self, record: &str) -> Result<bool, Error> {
-        let lines: Vec<&str> = record.trim().split('\n').collect();
-        if lines.is_empty() {
-            return Ok(false);
-        }
-
-        tracing::debug!("Processing {} lines in JSONEachRow format", lines.len());
-        let mut valid_spans_found = false;
-
-        for line in lines {
-            if line.trim().is_empty() {
-                continue;
-            }
-
-            tracing::debug!("Processing line: {}", line);
-            if let Ok(json) = serde_json::from_str::<Value>(line) {
-                let (is_valid, schema_type) = self.is_valid_span_json(&json);
-                if is_valid {
-                    valid_spans_found = true;
-                    tracing::info!("Valid span found with schema type: {:?}", schema_type);
-
-                    // Send this individual span to Kinesis
-                    if line.len() > MAX_RECORD_SIZE_BYTES {
-                        tracing::warn!(
-                            "Span size {} bytes exceeds maximum size of {} bytes, skipping",
-                            line.len(),
-                            MAX_RECORD_SIZE_BYTES
-                        );
-                        continue;
-                    }
-
-                    // Extract span details for better logging
-                    let (span_id, trace_id) = match schema_type {
-                        SchemaType::Direct => {
-                            let span_id = json
-                                .get("SpanId")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("unknown");
-                            let trace_id = json
-                                .get("TraceId")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("unknown");
-                            (span_id, trace_id)
-                        }
-                        SchemaType::Nested => {
-                            if let Some(record) = json.get("record") {
-                                let span_id = record
-                                    .get("spanId")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("unknown");
-                                let trace_id = record
-                                    .get("traceId")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("unknown");
-                                (span_id, trace_id)
-                            } else {
-                                ("unknown", "unknown")
-                            }
-                        }
-                        SchemaType::Unknown => {
-                            // Try both formats
-                            let span_id = json
-                                .get("SpanId")
-                                .and_then(|v| v.as_str())
-                                .or_else(|| {
-                                    json.get("record")
-                                        .and_then(|r| r.get("spanId"))
-                                        .and_then(|v| v.as_str())
-                                })
-                                .unwrap_or("unknown");
-                            let trace_id = json
-                                .get("TraceId")
-                                .and_then(|v| v.as_str())
-                                .or_else(|| {
-                                    json.get("record")
-                                        .and_then(|r| r.get("traceId"))
-                                        .and_then(|v| v.as_str())
-                                })
-                                .unwrap_or("unknown");
-                            (span_id, trace_id)
-                        }
-                    };
-
-                    let duration = match schema_type {
-                        SchemaType::Direct => {
-                            json.get("Duration").and_then(|v| v.as_u64()).unwrap_or(0)
-                        }
-                        _ => 0, // Duration might not be available in other formats
-                    };
-
-                    tracing::info!(
-                        "Processing span: ID={}, TraceID={}, Duration={} ns, Schema={:?}",
-                        span_id,
-                        trace_id,
-                        duration,
-                        schema_type
-                    );
-
-                    // Log the Kinesis stream name for debugging
-                    tracing::debug!("Sending to Kinesis stream: {}", self.stream_name);
-
-                    match self
-                        .kinesis_client
-                        .put_record()
-                        .stream_name(&self.stream_name)
-                        .data(Blob::new(line))
-                        .partition_key(Uuid::new_v4().to_string())
-                        .send()
-                        .await
-                    {
-                        Ok(_) => {
-                            tracing::info!("Successfully sent span to Kinesis: ID={}", span_id);
-                        }
-                        Err(e) => {
-                            tracing::error!("Failed to send record to Kinesis: {}", e);
-                            return Err(Error::from(format!(
-                                "Failed to send record to Kinesis: {}",
-                                e
-                            )));
-                        }
-                    }
-                } else {
-                    tracing::debug!("Line is not a valid span");
-                }
-            } else {
-                tracing::debug!("Failed to parse line as JSON: {}", line);
-            }
-        }
-
-        Ok(valid_spans_found)
-    }
-
     async fn send_record(&self, record: String) -> Result<(), Error> {
-        // Log the raw record for debugging
-        tracing::debug!("Received record: {}", record);
+        // Add detailed debug logging to understand the record structure
+        tracing::debug!(
+            "Raw record (first 200 chars): {}",
+            record.chars().take(200).collect::<String>()
+        );
 
         // Check if the record is too large
         if record.len() > MAX_RECORD_SIZE_BYTES {
-            tracing::warn!(
-                "Record size {} bytes exceeds maximum size of {} bytes, skipping",
-                record.len(),
-                MAX_RECORD_SIZE_BYTES
-            );
+            tracing::warn!("Record too large ({} bytes), skipping", record.len());
             return Ok(());
         }
 
         // First try to process as JSONEachRow format (multiple JSON objects, one per line)
-        if let Ok(true) = self.process_json_each_row(&record).await {
-            tracing::info!("Successfully processed record as JSONEachRow format");
-            return Ok(());
-        }
+        if record.contains("\n") {
+            let lines: Vec<&str> = record.trim().split('\n').collect();
+            if !lines.is_empty() {
+                tracing::debug!("Processing {} lines in JSONEachRow format", lines.len());
+                let mut spans_sent = 0;
 
-        // If not JSONEachRow, try as a single JSON object
-        if let Ok(json) = serde_json::from_str::<Value>(&record) {
-            // Try to extract a span ID for logging
-            let span_id = json
-                .get("SpanId")
-                .or_else(|| json.get("spanId"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown");
+                for line in lines {
+                    if line.trim().is_empty() {
+                        continue;
+                    }
 
-            let trace_id = json
-                .get("TraceId")
-                .or_else(|| json.get("traceId"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown");
+                    // Only process lines that look like OpenTelemetry spans
+                    if line.contains("\"TraceId\":") && line.contains("\"SpanId\":") {
+                        if let Ok(json) = serde_json::from_str::<Value>(line) {
+                            if let (Some(trace_id), Some(span_id)) = (
+                                json.get("TraceId").and_then(|v| v.as_str()),
+                                json.get("SpanId").and_then(|v| v.as_str()),
+                            ) {
+                                tracing::info!(
+                                    "Found OpenTelemetry span: TraceId={}, SpanId={}",
+                                    trace_id,
+                                    span_id
+                                );
 
-            tracing::info!(
-                "Processing record with SpanId={}, TraceId={}",
-                span_id,
-                trace_id
-            );
-
-            // Log the Kinesis stream name for debugging
-            tracing::debug!("Sending to Kinesis stream: {}", self.stream_name);
-
-            // Send the record to Kinesis
-            match self
-                .kinesis_client
-                .put_record()
-                .stream_name(&self.stream_name)
-                .data(Blob::new(record))
-                .partition_key(Uuid::new_v4().to_string())
-                .send()
-                .await
-            {
-                Ok(_) => {
-                    tracing::info!("Successfully sent record to Kinesis");
-                    return Ok(());
+                                // Send to Kinesis
+                                if let Err(e) = self.send_to_kinesis(line.to_string()).await {
+                                    tracing::error!("Failed to send span: {}", e);
+                                    return Err(e);
+                                }
+                                spans_sent += 1;
+                            }
+                        }
+                    }
                 }
-                Err(e) => {
-                    tracing::error!("Failed to send record to Kinesis: {}", e);
-                    return Err(Error::from(format!(
-                        "Failed to send record to Kinesis: {}",
-                        e
-                    )));
+
+                if spans_sent > 0 {
+                    tracing::info!("Sent {} OpenTelemetry spans to Kinesis", spans_sent);
+                    return Ok(());
                 }
             }
-        } else {
-            // If it's not valid JSON, log it and try to send it anyway
-            tracing::warn!("Record is not valid JSON, but will try to send it anyway");
+        }
 
-            // Log the Kinesis stream name for debugging
-            tracing::debug!("Sending to Kinesis stream: {}", self.stream_name);
+        // Try to parse as a single JSON object
+        if let Ok(json) = serde_json::from_str::<Value>(&record) {
+            // CASE 1: Direct OpenTelemetry span with TraceId and SpanId at root level
+            if let (Some(trace_id), Some(span_id)) = (
+                json.get("TraceId").and_then(|v| v.as_str()),
+                json.get("SpanId").and_then(|v| v.as_str()),
+            ) {
+                tracing::info!(
+                    "Found OpenTelemetry span: TraceId={}, SpanId={}",
+                    trace_id,
+                    span_id
+                );
+                return self.send_to_kinesis(record).await;
+            }
 
-            // Send the record to Kinesis
-            match self
-                .kinesis_client
-                .put_record()
-                .stream_name(&self.stream_name)
-                .data(Blob::new(record))
-                .partition_key(Uuid::new_v4().to_string())
-                .send()
-                .await
-            {
-                Ok(_) => {
-                    tracing::info!("Successfully sent non-JSON record to Kinesis");
-                    return Ok(());
+            // CASE 2: Structured log with embedded span in message field
+            if json.get("fields").is_some() {
+                if let Some(message) = json
+                    .get("fields")
+                    .and_then(|f| f.get("message"))
+                    .and_then(|m| m.as_str())
+                {
+                    if message.contains("\"TraceId\":") && message.contains("\"SpanId\":") {
+                        if let Ok(message_json) = serde_json::from_str::<Value>(message) {
+                            if let (Some(trace_id), Some(span_id)) = (
+                                message_json.get("TraceId").and_then(|v| v.as_str()),
+                                message_json.get("SpanId").and_then(|v| v.as_str()),
+                            ) {
+                                tracing::info!("Extracted OpenTelemetry span from message: TraceId={}, SpanId={}", trace_id, span_id);
+                                return self.send_to_kinesis(message.to_string()).await;
+                            }
+                        }
+                    }
                 }
-                Err(e) => {
-                    tracing::error!("Failed to send record to Kinesis: {}", e);
-                    return Err(Error::from(format!(
-                        "Failed to send record to Kinesis: {}",
-                        e
-                    )));
-                }
+            }
+        }
+
+        // If we get here, the record is not an OpenTelemetry span - skip it
+        tracing::debug!("Skipping record (not an OpenTelemetry span)");
+        Ok(())
+    }
+
+    // Helper method to send data to Kinesis
+    async fn send_to_kinesis(&self, data: String) -> Result<(), Error> {
+        match self
+            .kinesis_client
+            .put_record()
+            .stream_name(&self.stream_name)
+            .data(Blob::new(data))
+            .partition_key(Uuid::new_v4().to_string())
+            .send()
+            .await
+        {
+            Ok(_) => {
+                tracing::info!("Successfully sent span to Kinesis");
+                Ok(())
+            }
+            Err(e) => {
+                tracing::error!("Failed to send span to Kinesis: {}", e);
+                Err(Error::from(format!(
+                    "Failed to send span to Kinesis: {}",
+                    e
+                )))
             }
         }
     }
@@ -390,8 +168,11 @@ impl TelemetryHandler {
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
+    // Set up logging with info level for our code, but warn for AWS libraries
+    std::env::set_var("RUST_LOG", "info,aws_config=warn,aws_smithy_http=warn");
     tracing::init_default_subscriber();
-    tracing::info!("Starting Rust extension for OpenTelemetry spans");
+
+    tracing::info!("Starting OpenTelemetry span exporter extension - only processing spans, ignoring regular logs");
 
     let handler = Arc::new(TelemetryHandler::new().await?);
     let handler_clone = handler.clone();
@@ -404,10 +185,13 @@ async fn main() -> Result<(), Error> {
             let handler = handler_clone.clone();
             async move {
                 tracing::debug!("Received {} telemetry events", events.len());
+
                 for event in events {
                     if let LambdaTelemetryRecord::Function(record) = event.record {
                         match handler.send_record(record).await {
-                            Ok(_) => {}
+                            Ok(_) => {
+                                tracing::debug!("Successfully processed telemetry record");
+                            }
                             Err(e) => {
                                 tracing::error!("Error processing record: {}", e);
                             }
@@ -420,11 +204,15 @@ async fn main() -> Result<(), Error> {
             }
         }));
 
+    tracing::info!("Extension initialized, starting run");
+
     Extension::new()
         .with_telemetry_processor(telemetry_processor)
         .with_telemetry_types(&["function"])
         .run()
         .await?;
+
+    tracing::info!("Extension run completed");
 
     Ok(())
 }
