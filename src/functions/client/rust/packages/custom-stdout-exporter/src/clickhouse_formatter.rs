@@ -364,5 +364,5 @@ pub fn transform_otlp_to_clickhouse(otlp_json: &str) -> Result<String, serde_jso
     }
 
     // Serialize to JSON
-    serde_json::to_string_pretty(&clickhouse_spans)
+    serde_json::to_string(&clickhouse_spans)
 }
